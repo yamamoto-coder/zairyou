@@ -707,13 +707,13 @@ function Logo({ size = "large", onClick }) {
 
 function TaxToggle({ mode, onChange }) {
   return (
-    <div className="flex items-center rounded-full border border-gray-200 bg-white text-sm overflow-hidden shrink-0">
+    <div className="flex items-center rounded-full border border-gray-200 bg-white overflow-hidden shrink-0">
       {["ex", "in"].map((m) => (
         <button
           key={m}
           onClick={() => onChange(m)}
           className={
-            "px-3 py-1.5 transition-colors " +
+            "px-1.5 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm transition-colors " +
             (mode === m
               ? "bg-green-700 text-white"
               : "text-gray-600 hover:bg-gray-50")
@@ -744,7 +744,7 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
     <div className="relative" style={{ maxWidth: 640, width: "100%" }}>
       <div
         className={
-          "flex items-center bg-white border border-gray-200 rounded-full shadow hover:shadow-md transition-shadow px-4 " +
+          "flex items-center bg-white border border-gray-200 rounded-full shadow hover:shadow-md transition-shadow px-3 sm:px-4 " +
           (compact ? "h-11" : "h-12")
         }
       >
@@ -770,11 +770,12 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
           className="flex-1 min-w-0 outline-none px-3 text-base bg-transparent"
         />
         {value && (
-          <button onClick={() => onChange("")} className="text-gray-400 hover:text-gray-600 px-2 text-lg" aria-label="クリア">×</button>
+          <button onClick={() => onChange("")} className="text-gray-400 hover:text-gray-600 px-1 sm:px-2 text-lg" aria-label="クリア">×</button>
         )}
         {onAI && (
-          <button onClick={onAI} className="ml-1 shrink-0 flex items-center gap-1 text-sm rounded-full px-3 py-1.5 bg-green-50 text-green-800 hover:bg-green-100 border border-green-100">
-            <span>✦</span> AI モード
+          <button onClick={onAI} className="ml-1 shrink-0 flex items-center gap-1 rounded-full px-2 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm bg-green-50 text-green-800 hover:bg-green-100 border border-green-100">
+            <span>✦</span>
+            <span>AI<span className="hidden sm:inline"> モード</span></span>
           </button>
         )}
         {taxMode && onTax && (
@@ -1383,7 +1384,7 @@ ${window.location.href.split("#")[0]}
 
       {/* ================= 共通ヘッダー ================= */}
       {view !== "home" && view !== "supplier" && (
-        <div className="border-b border-gray-100 px-4 md:px-8 py-4 flex items-center gap-4 sticky top-0 bg-white z-10">
+        <div className="border-b border-gray-100 px-4 md:px-8 py-4 flex flex-wrap items-center gap-4 gap-y-2 sticky top-0 bg-white z-10">
           <button
             onClick={goBack}
             className="text-sm text-gray-600 hover:bg-gray-50 border border-gray-200 rounded-full px-3 py-1.5 shrink-0"
@@ -1391,7 +1392,7 @@ ${window.location.href.split("#")[0]}
           >← 戻る</button>
           <Logo size="small" onClick={goHome} />
           {view !== "manage" && (
-            <div className="flex-1 max-w-xl">
+            <div className="order-last w-full sm:order-none sm:w-auto sm:flex-1 min-w-0 sm:max-w-xl">
               <SearchBar compact value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI}
                 history={history} onPick={(h) => { setQuery(h); runSearch(h); }} onRemove={removeHistory}
                 taxMode={taxMode} onTax={changeTax} />
