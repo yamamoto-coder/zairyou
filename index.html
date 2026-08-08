@@ -118,15 +118,31 @@ async function sset(key, value, shared = false) {
 // 容量が約5MBしかなく写真数枚で他のデータ保存まで壊れるため使わない。
 function docDb() {
   return new Promise((res, rej) => {
-    const req = indexedDB.open("shizai-docs", 1);
+    const req = indexedDB.open("shizai-docs", 2);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains("docs")) {
-        const st = db.createObjectStore("docs", { keyPath: "docId" });
-        st.createIndex("invoiceId", "invoiceId", { unique: false });
-      }
+      const st = db.objectStoreNames.contains("docs")
+        ? req.transaction.objectStore("docs")
+        : db.createObjectStore("docs", { keyPath: "docId" });
+      if (!st.indexNames.contains("invoiceId")) st.createIndex("invoiceId", "invoiceId", { unique: false });
+      if (!st.indexNames.contains("hash")) st.createIndex("hash", "hash", { unique: false });
     };
     req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+// ファイル内容のSHA-256(重複取込の検出用)。計算できない環境では null
+async function fileHash(f) {
+  if (!window.crypto || !crypto.subtle) return null;
+  const buf = await f.arrayBuffer();
+  const h = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function docFindByHash(hash) {
+  const db = await docDb();
+  return new Promise((res, rej) => {
+    const req = db.transaction("docs").objectStore("docs").index("hash").get(hash);
+    req.onsuccess = () => res(req.result || null);
     req.onerror = () => rej(req.error);
   });
 }
@@ -1116,6 +1132,15 @@ function ShizaiSearch() {
         if (f.size > 40 * 1024 * 1024) {
           throw new Error("40MBを超えています。ファイルを分割してください");
         }
+        // 同じファイル(内容が完全一致)を取込済ならスキップ
+        const hash = await fileHash(f).catch(() => null);
+        if (hash) {
+          const dup = await docFindByHash(hash).catch(() => null);
+          if (dup) {
+            setJobs((j) => j.map((x) => (x.id === jobId ? { ...x, status: "dup" } : x)));
+            continue;
+          }
+        }
         let prep = await prepareFile(f);
         let parsed;
         try {
@@ -1141,7 +1166,7 @@ function ShizaiSearch() {
         if (existing) {
           // 追加ページも同じ請求書の原本として保存(失敗しても取込は続行)
           try {
-            await docPut({ docId: jobId, invoiceId: existing.id, name: f.name, mime: f.type, blob: f, added_at: new Date().toISOString() });
+            await docPut({ docId: jobId, invoiceId: existing.id, name: f.name, mime: f.type, blob: f, hash, added_at: new Date().toISOString() });
           } catch {}
           const seen = new Set(
             existing.items.map((it) => norm(it.name) + "|" + it.unit_price + "|" + it.quantity)
@@ -1180,7 +1205,7 @@ function ShizaiSearch() {
         };
         // 原本ファイルを保存(失敗しても取込は続行)
         try {
-          await docPut({ docId: jobId, invoiceId: record.id, name: f.name, mime: f.type, blob: f, added_at: record.added_at });
+          await docPut({ docId: jobId, invoiceId: record.id, name: f.name, mime: f.type, blob: f, hash, added_at: record.added_at });
         } catch {}
         current = [...current, record];
         await sset(INVOICES_KEY, current);
@@ -1316,6 +1341,43 @@ function ShizaiSearch() {
       try { await docsDeleteForInvoice(id); } catch {}
     },
     [invoices]
+  );
+
+  // ---------- 明細の個別削除 ----------
+  const deleteItem = useCallback(
+    async (row) => {
+      let removed = false;
+      const next = invoices.map((inv) => {
+        if (inv.id !== row.invoice_id || removed) return inv;
+        const idx = inv.items.findIndex(
+          (it) =>
+            norm(it.name) === norm(row.name) &&
+            it.unit_price === row.unit_price &&
+            it.quantity === row.quantity &&
+            (it.spec || "") === (row.spec || "")
+        );
+        if (idx < 0) return inv;
+        removed = true;
+        return { ...inv, items: inv.items.filter((_, i) => i !== idx) };
+      });
+      if (!removed) return;
+      try {
+        await sset(INVOICES_KEY, next);
+        setInvoices(next);
+      } catch {
+        return;
+      }
+      // 詳細画面を最新データで作り直す(全明細が消えたら前の画面へ)
+      if (detail) {
+        const freshGroups = groupByMaterial(
+          searchRows(flatten(next), committed, ["name", "maker", "spec", "category", "notes", "supplier"])
+        );
+        const g2 = freshGroups.find((g) => g.key === detail.key);
+        if (g2) setDetail(g2);
+        else goBack();
+      }
+    },
+    [invoices, detail, committed, goBack]
   );
 
   // ---------- 原本ビューア ----------
@@ -1684,6 +1746,7 @@ ${window.location.href.split("#")[0]}
                     <th className="px-4 py-2.5 font-normal text-right">数量</th>
                     <th className="px-4 py-2.5 font-normal text-right">単価({taxMode === "ex" ? "税別" : "税込"})</th>
                     <th className="px-4 py-2.5 font-normal text-right">金額</th>
+                    <th className="px-2 py-2.5 font-normal"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1695,6 +1758,14 @@ ${window.location.href.split("#")[0]}
                       <td className="px-4 py-2.5 text-right">{r.quantity ?? "—"} {r.unit || ""}</td>
                       <td className="px-4 py-2.5 text-right font-medium">{yen(r.unit_price, r.price_tax)}</td>
                       <td className="px-4 py-2.5 text-right">{yen(r.amount, r.price_tax)}</td>
+                      <td className="px-2 py-2.5 text-right">
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`${fmtDate(r.invoice_date)} の「${r.name}」の明細を削除しますか?(元に戻せません)`)) deleteItem(r);
+                          }}
+                          className="text-xs text-red-500 hover:bg-red-50 rounded px-2 py-1 shrink-0"
+                        >削除</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
