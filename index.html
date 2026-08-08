@@ -53,6 +53,12 @@ window.storage = {
 //  - 仕入先に料金表(写真/PDF)をアップしてもらう受付ページ
 // ============================================================
 
+// 管理者モード: URL の末尾に #admin を付けて開いたときだけ
+// 「読み取りエンジン」(APIキー設定)を表示する。一般ユーザーには非表示。
+const IS_ADMIN =
+  window.location.hash === "#admin" ||
+  new URLSearchParams(window.location.search).has("admin");
+
 const INVOICES_KEY = "shizai-invoices-v1";
 const PRICELIST_KEY = "shizai-pricelists-v1"; // 反映済みの料金表(自分用)
 const INBOX_KEY = "shizai-pricelist-inbox-v1"; // 仕入先からの受信箱(共有)
@@ -280,7 +286,7 @@ async function callClaudeRaw(body) {
   const akey = (getSavedSettings().anthropicKey || "").trim();
   if (!akey) {
     throw new Error(
-      "Claude APIキーが未設定です。GitHub版では読み取りエンジンにGemini(推奨)を設定するか、設定画面でClaude APIキーを登録してください"
+      "このパソコンではAI読み取りがまだ設定されていません。設定は管理者が行いますので、管理者にご連絡ください"
     );
   }
   let response;
@@ -1513,9 +1519,10 @@ ${window.location.href.split("#")[0]}
         <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
           <h1 className="text-xl font-bold mb-1">データ管理</h1>
 
-          {/* 読み取りエンジン設定 */}
+          {/* 読み取りエンジン設定(管理者モード限定) */}
+          {IS_ADMIN && (
           <div className="mt-5 border border-gray-200 rounded-xl p-4">
-            <h2 className="font-medium">読み取りエンジン</h2>
+            <h2 className="font-medium">読み取りエンジン <span className="text-xs font-normal text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 ml-1">管理者モード</span></h2>
             <p className="text-xs text-gray-500 mt-1">
               請求書・料金表の読み取りに使うAIを選べます。値上がり予測とAIモードはWeb検索連携のためClaudeを使用します。
             </p>
@@ -1645,6 +1652,14 @@ ${window.location.href.split("#")[0]}
               </div>
             )}
           </div>
+          )}
+
+          {/* 一般ユーザー向け: 読み取りエンジン未設定時の案内 */}
+          {!IS_ADMIN && !(geminiKey.trim() || anthropicKey.trim()) && (
+            <div className="mt-5 border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-800 leading-relaxed">
+              このパソコンでは請求書のAI読み取りがまだ設定されていません。設定は管理者が行いますので、管理者にご連絡ください。
+            </div>
+          )}
 
           {/* 料金表の受信箱 */}
           <div className="mt-5">
