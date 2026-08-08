@@ -1,0 +1,1851 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>問屋さん — 建築資材検索</title>
+<meta name="robots" content="noindex" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { margin: 0; font-family: 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<noscript>このアプリの利用には JavaScript を有効にしてください。</noscript>
+<script>
+  // ブラウザ用に旧方式(React.createElement)でJSXを変換するプリセットを登録
+  Babel.registerPreset("app", {
+    presets: [[Babel.availablePresets["react"], { runtime: "classic" }]],
+  });
+</script>
+<script type="text/babel" data-presets="app">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ============================================================
+// GitHub Pages 版: 保存はこのブラウザの localStorage に行う
+// (Claudeアーティファクト版の window.storage 互換シム)
+// ============================================================
+window.storage = {
+  async get(key, shared) {
+    const v = localStorage.getItem((shared ? "shared:" : "p:") + key);
+    return v == null ? null : { key, value: v, shared: !!shared };
+  },
+  async set(key, value, shared) {
+    localStorage.setItem((shared ? "shared:" : "p:") + key, value);
+    return { key, value, shared: !!shared };
+  },
+  async delete(key, shared) {
+    localStorage.removeItem((shared ? "shared:" : "p:") + key);
+    return { key, deleted: true, shared: !!shared };
+  },
+};
+
+// ============================================================
+// 問屋さん — 社内向け 建築資材 検索システム
+// 塗料・木材・壁紙・金物など全建築資材対応版
+//  - 請求書PDF取込 → AI明細抽出 → 検索・価格履歴
+//  - 税別/税込 切替
+//  - 最終購入から期間が空いた資材の値上がり予測(Web検索連携)
+//  - 仕入先に料金表(写真/PDF)をアップしてもらう受付ページ
+// ============================================================
+
+const INVOICES_KEY = "shizai-invoices-v1";
+const PRICELIST_KEY = "shizai-pricelists-v1"; // 反映済みの料金表(自分用)
+const INBOX_KEY = "shizai-pricelist-inbox-v1"; // 仕入先からの受信箱(共有)
+const SETTINGS_KEY = "shizai-settings-v1";
+
+const TAX_RATE = 0.1;
+const STALE_MONTHS = 6; // これ以上前の購入は「価格が古い」扱い
+
+const LOGO_COLORS = ["#2e7d32", "#c62828", "#f9a825", "#1565c0"];
+
+const CATEGORY_ICONS = {
+  塗料: "🎨", シーリング: "🧴", 木材: "🪵", "壁紙・内装": "🧻",
+  建材ボード: "🧱", 金物: "🔩", 電材: "🔌", 設備: "🚿",
+  副資材: "🧰", その他: "📦",
+};
+
+// ---------- ユーティリティ ----------
+function norm(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) =>
+      String.fromCharCode(c.charCodeAt(0) - 0xfee0)
+    )
+    .replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60))
+    .replace(/[ー－―‐]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function monthsSince(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d)) return null;
+  return Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 30.44));
+}
+
+function fmtDate(s) {
+  return s || "—";
+}
+
+async function sget(key, shared = false) {
+  try {
+    const r = await window.storage.get(key, shared);
+    return r ? JSON.parse(r.value) : null;
+  } catch {
+    return null;
+  }
+}
+async function sset(key, value, shared = false) {
+  await window.storage.set(key, JSON.stringify(value), shared);
+}
+
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result.split(",")[1]);
+    r.onerror = () => rej(new Error("読み込み失敗"));
+    r.readAsDataURL(file);
+  });
+}
+
+// 大きなスキャンPDFは送信前に各ページを軽量なJPEGへ変換する
+let pdfjsPromise = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (!pdfjsPromise) {
+    pdfjsPromise = new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = () => {
+        try {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          res(window.pdfjsLib);
+        } catch (e) {
+          rej(e);
+        }
+      };
+      s.onerror = () => rej(new Error("PDF変換ライブラリを読み込めませんでした"));
+      document.head.appendChild(s);
+    });
+  }
+  return pdfjsPromise;
+}
+
+async function pdfToImages(file, maxPages = 8) {
+  const pdfjs = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjs.getDocument({ data: buf }).promise;
+  const pages = Math.min(doc.numPages, maxPages);
+  const images = [];
+  for (let i = 1; i <= pages; i++) {
+    const page = await doc.getPage(i);
+    const vp1 = page.getViewport({ scale: 1 });
+    const scale = Math.min(2.5, 1600 / vp1.width);
+    const vp = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    images.push(canvas.toDataURL("image/jpeg", 0.8).split(",")[1]);
+  }
+  return { images, skipped: doc.numPages - pages };
+}
+
+function isPdfFile(f) {
+  return f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+}
+function isImageFile(f) {
+  return (f.type && f.type.startsWith("image/")) || /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name);
+}
+
+// 写真は読み取り前に縮小・JPEG統一(容量削減 + 形式ゆれの吸収)
+async function prepareFile(file, forceRaster = false) {
+  if (isPdfFile(file)) {
+    if (forceRaster || file.size > 1.5 * 1024 * 1024) {
+      try {
+        const { images, skipped } = await pdfToImages(file);
+        return { name: file.name, type: "images", images, skipped };
+      } catch {
+        if (forceRaster) throw new Error("PDFを画像に変換できませんでした");
+        // 変換できない場合はそのまま送ってみる
+      }
+    }
+    return { name: file.name, type: "application/pdf", b64: await fileToBase64(file) };
+  }
+  let source = null;
+  // 方式1: createImageBitmap(最も確実)
+  try {
+    source = await createImageBitmap(file);
+  } catch {}
+  // 方式2: dataURL経由のImage読み込み
+  if (!source) {
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error("read"));
+        r.readAsDataURL(file);
+      });
+      source = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = () => rej(new Error("decode"));
+        i.src = dataUrl;
+      });
+    } catch {}
+  }
+  if (!source) {
+    throw new Error(
+      "この画像形式を読み込めませんでした。iPhoneの写真(HEIC)の場合は、写真の画面をスクリーンショットして代わりに使うか、iPhoneの 設定→カメラ→フォーマット→互換性優先 に変更して撮り直してください"
+    );
+  }
+  const w = source.width, h = source.height;
+  const max = 2200;
+  const scale = Math.min(1, max / Math.max(w, h));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+  if (source.close) source.close();
+  const b64 = canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+  return { name: file.name, type: "image/jpeg", b64 };
+}
+
+function contentBlocksFor(prep) {
+  if (prep.type === "images") {
+    return prep.images.map((b) => ({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: b },
+    }));
+  }
+  if (prep.type === "application/pdf") {
+    return [{
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: prep.b64 },
+    }];
+  }
+  return [{
+    type: "image",
+    source: { type: "base64", media_type: prep.type || "image/jpeg", data: prep.b64 },
+  }];
+}
+
+// 極小リクエストでAI接続そのものが生きているか確認する
+async function probeClaude() {
+  try {
+    await callClaudeRaw({ messages: [{ role: "user", content: "OK" }] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const ENV_BLOCK_MSG =
+  "この画面からAIへの接続が遮断されています(ファイルの問題ではありません)。次の順でご確認ください: " +
+  "① Claudeの 設定 → 機能(Capabilities)で「AI搭載アーティファクト(Create AI-powered artifacts)」と「コード実行とファイル作成」をオンにする " +
+  "② Chromeの広告ブロッカー等の拡張機能を一時停止するか、シークレットウィンドウで開き直す " +
+  "③ Chromeの設定 → プライバシー で「サードパーティCookieをブロック」を許可に変更する " +
+  "④ 社内ネットワークの場合はスマホ回線でも一度お試しください";
+
+async function fetchRetry(url, opts) {
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await fetch(url, opts);
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+function getSavedSettings() {
+  try {
+    const s = localStorage.getItem("p:" + SETTINGS_KEY);
+    return s ? JSON.parse(s) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function callClaudeRaw(body) {
+  const akey = (getSavedSettings().anthropicKey || "").trim();
+  if (!akey) {
+    throw new Error(
+      "Claude APIキーが未設定です。GitHub版では読み取りエンジンにGemini(推奨)を設定するか、設定画面でClaude APIキーを登録してください"
+    );
+  }
+  let response;
+  try {
+    response = await fetchRetry("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": akey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4000, ...body }),
+    });
+  } catch {
+    throw new Error(
+      "通信に失敗しました(3回試行)。ファイルが大きい場合はスキャン解像度を下げるか、時間をおいて「再試行」を押してください"
+    );
+  }
+  const data = await response.json();
+  if (data.error) {
+    throw new Error("AIエラー: " + (data.error.message || JSON.stringify(data.error)));
+  }
+  const text = (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  return { text, stop: data.stop_reason };
+}
+
+// ---------- Google Gemini API(ユーザーのAPIキーで直接呼び出し) ----------
+const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
+function geminiParts(prep, prompt) {
+  const media =
+    prep.type === "images"
+      ? prep.images.map((b) => ({ inline_data: { mime_type: "image/jpeg", data: b } }))
+      : [{ inline_data: { mime_type: prep.type || "image/jpeg", data: prep.b64 } }];
+  return [...media, { text: prompt }];
+}
+
+async function callGemini(cfg, parts, opts = {}) {
+  const model = cfg.geminiModel || DEFAULT_GEMINI_MODEL;
+  let resp;
+  try {
+    resp = await fetchRetry(
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+        encodeURIComponent(model) +
+        ":generateContent?key=" +
+        encodeURIComponent(cfg.geminiKey),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          ...(opts.search ? { tools: [{ google_search: {} }] } : {}),
+          generationConfig: {
+            ...(opts.search ? {} : { responseMimeType: "application/json" }),
+            maxOutputTokens: 8192,
+            temperature: opts.search ? 0.3 : 0,
+          },
+        }),
+      }
+    );
+  } catch {
+    throw new Error("Geminiへの通信に失敗しました。ネットワークをご確認ください");
+  }
+  const data = await resp.json();
+  if (data.error) {
+    throw new Error("Geminiエラー: " + (data.error.message || resp.status));
+  }
+  const cand = data.candidates && data.candidates[0];
+  const text = ((cand && cand.content && cand.content.parts) || [])
+    .map((pt) => pt.text || "")
+    .join("");
+  if (!text) {
+    throw new Error(
+      "Geminiから応答がありませんでした" +
+        (cand && cand.finishReason ? "(" + cand.finishReason + ")" : "")
+    );
+  }
+  return text;
+}
+
+// 応答が長さ上限で途切れた場合、続きを繰り返し取得して結合する
+async function callClaude(body) {
+  const base = body.messages;
+  let acc = "";
+  for (let i = 0; i < 8; i++) {
+    const trimmed = acc.replace(/\s+$/, "");
+    const msgs = trimmed ? [...base, { role: "assistant", content: trimmed }] : base;
+    const { text, stop } = await callClaudeRaw({ ...body, messages: msgs });
+    acc = trimmed + text;
+    if (stop !== "max_tokens") break;
+  }
+  if (!acc) throw new Error("AIから応答がありませんでした");
+  return acc;
+}
+
+function parseJson(text) {
+  const clean = (text || "").replace(/```json|```/g, "").trim();
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  return JSON.parse(start >= 0 ? clean.slice(start, end + 1) : clean);
+}
+
+const CATEGORY_LINE =
+  "分類は次から推定: 塗料 / シーリング / 木材 / 壁紙・内装 / 建材ボード / 金物 / 電材 / 設備 / 副資材 / その他";
+
+// ---------- AI: 請求書明細の抽出 ----------
+const ITEM_KEYMAP = {
+  n: "name", mk: "maker", sp: "spec", c: "category", q: "quantity",
+  u: "unit", p: "unit_price", t: "price_tax", a: "amount", m: "notes",
+};
+function expandItem(raw) {
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) out[ITEM_KEYMAP[k] || k] = v;
+  return out;
+}
+// JSONが途中で切れていても、完成している明細行だけを救い出す
+function salvageInvoice(text) {
+  const s = (text || "").replace(/```json|```/g, "");
+  const head = (key) => {
+    const m = s.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]*)"'));
+    return m ? m[1] : "";
+  };
+  const items = [];
+  const arr = s.slice(s.indexOf('"items"'));
+  for (const m of arr.matchAll(/\{[^{}]*\}/g)) {
+    try { items.push(JSON.parse(m[0])); } catch {}
+  }
+  if (!items.length) return null;
+  return { s: head("s"), no: head("no"), d: head("d"), items };
+}
+async function extractInvoice(prep, cfg) {
+  const prompt = `あなたは建築資材(塗料・木材・壁紙・金物・設備材など全般)の請求書を読み取るアシスタントです。
+この請求書(スキャンPDFまたはスマホ写真の場合あり。斜め・影・手ブレがあっても可能な限り読み取る)から明細を抽出し、改行なしの1行のJSONだけを返してください。前置き・コードブロック記号は一切不要です。
+
+形式(キーは必ずこの短縮名を使う):
+{"s":"仕入先名","no":"請求書番号","d":"YYYY-MM-DD","items":[{"n":"材料名","mk":"メーカー","sp":"規格・寸法・容量","c":"分類","q":数量,"u":"単位","p":単価,"t":"ex","a":金額,"m":"特記"}]}
+
+ルール:
+- ${CATEGORY_LINE}
+- t は単価が税抜なら "ex"、税込なら "in"(判別不能は "ex")
+- 不明・空欄のキーは省略する(null や空文字を書かない)
+- 値引き・送料・小計・消費税の行は含めない
+- 和暦は西暦に変換`;
+  const useGemini = cfg && cfg.engine === "gemini" && cfg.geminiKey;
+
+  async function runOnce(subPrep, extraNote) {
+    const fullPrompt = prompt + (extraNote || "");
+    const claudeMsg = {
+      messages: [
+        { role: "user", content: [...contentBlocksFor(subPrep), { type: "text", text: fullPrompt }] },
+      ],
+    };
+    let text;
+    let fb = false;
+    if (useGemini) {
+      try {
+        text = await callGemini(cfg, geminiParts(subPrep, fullPrompt));
+      } catch {
+        fb = true;
+        text = await callClaude(claudeMsg);
+      }
+    } else {
+      text = await callClaude(claudeMsg);
+    }
+    let parsed;
+    try {
+      parsed = parseJson(text);
+    } catch {
+      parsed = salvageInvoice(text);
+      if (!parsed) {
+        const head = (text || "").slice(0, 120).replace(/\s+/g, " ");
+        throw new Error("明細の解析に失敗しました(AI応答の冒頭: " + head + " …)");
+      }
+    }
+    return { parsed, fb };
+  }
+
+  // ページ画像が多い場合は3ページずつに分けて送信(サイズ・時間の問題を回避)
+  const BATCH = 3;
+  let usedFallback = false;
+  let head = { s: "", no: "", d: "" };
+  let items = [];
+  if (prep.type === "images" && prep.images.length > BATCH) {
+    for (let i = 0; i < prep.images.length; i += BATCH) {
+      const sub = { ...prep, images: prep.images.slice(i, i + BATCH) };
+      const note =
+        "\n\n注: これは同一請求書の " + (i + 1) + "〜" + Math.min(i + BATCH, prep.images.length) +
+        " ページ目です。ヘッダ情報(s,no,d)は分かる範囲で記載してください。";
+      const { parsed, fb } = await runOnce(sub, note);
+      usedFallback = usedFallback || fb;
+      head.s = head.s || parsed.s || parsed.supplier || "";
+      head.no = head.no || parsed.no || parsed.invoice_no || "";
+      head.d = head.d || parsed.d || parsed.invoice_date || "";
+      items = items.concat((parsed.items || []).map(expandItem));
+    }
+  } else {
+    const { parsed, fb } = await runOnce(prep, "");
+    usedFallback = fb;
+    head = {
+      s: parsed.s ?? parsed.supplier ?? "",
+      no: parsed.no ?? parsed.invoice_no ?? "",
+      d: parsed.d ?? parsed.invoice_date ?? "",
+    };
+    items = (parsed.items || []).map(expandItem);
+  }
+  // 同一明細の重複(ページ跨ぎの重複読取)を除去
+  const seen = new Set();
+  items = items.filter((it) => {
+    const k = norm(it.name) + "|" + it.unit_price + "|" + it.quantity;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return {
+    supplier: head.s,
+    invoice_no: head.no,
+    invoice_date: head.d,
+    items,
+    engine_note: usedFallback,
+  };
+}
+
+// ---------- AI: 料金表(写真/PDF)の抽出 ----------
+async function extractPriceList(prep, supplierName, cfg) {
+  const prompt = `これは建築資材の仕入先「${supplierName || "不明"}」の現在の料金表(価格表)です。
+掲載商品を抽出し、改行なしの1行のJSONだけを返してください。前置き・コードブロック記号は不要です。
+
+形式(キーは必ずこの短縮名):
+{"d":"適用日YYYY-MM-DD","items":[{"n":"商品名","mk":"メーカー","sp":"規格","c":"分類","u":"単位","p":定価,"t":"ex","m":"特記"}]}
+
+ルール: ${CATEGORY_LINE}。t は税抜"ex"/税込"in"。不明のキーは省略。`;
+  const claudeMsg = {
+    messages: [
+      { role: "user", content: [...contentBlocksFor(prep), { type: "text", text: prompt }] },
+    ],
+  };
+  let text;
+  if (cfg && cfg.engine === "gemini" && cfg.geminiKey) {
+    try {
+      text = await callGemini(cfg, geminiParts(prep, prompt));
+    } catch {
+      text = await callClaude(claudeMsg);
+    }
+  } else {
+    text = await callClaude(claudeMsg);
+  }
+  let parsed;
+  try {
+    parsed = parseJson(text);
+  } catch {
+    parsed = salvageInvoice(text);
+    if (!parsed) throw new Error("料金表の解析に失敗しました");
+  }
+  const items = (parsed.items || []).map(expandItem).map((it) => ({
+    ...it,
+    list_price: it.list_price ?? it.unit_price,
+  }));
+  return { effective_date: parsed.d ?? parsed.effective_date ?? "", items };
+}
+
+// ---------- AI: 値上がり予測(Web検索連携) ----------
+async function predictPrice(group, cfg) {
+  const last = group.latest;
+  const prompt = `建築資材の現在価格を見積もります。Web検索で最新の価格改定情報(メーカーの値上げ発表、業界ニュース、市況)を調べた上で回答してください。
+
+対象資材:
+- 商品名: ${group.name}
+- メーカー: ${group.maker || "不明"}
+- 規格: ${group.spec || "不明"}
+- 分類: ${group.category || "不明"}
+- 最終購入日: ${last.invoice_date || "不明"}
+- 最終購入単価(税抜想定): ${last.unit_price ?? "不明"} 円
+
+最終購入日から現在(${new Date().toISOString().slice(0, 10)})までの値上がりを予測し、
+回答の最後に次のJSONだけを1つ出力してください:
+
+{
+  "rate_low": 値上がり率の下限(%表記の数値。例 3),
+  "rate_high": 値上がり率の上限(%表記の数値),
+  "predicted_low": 予測単価の下限(円・数値・税抜),
+  "predicted_high": 予測単価の上限(円・数値・税抜),
+  "summary": "根拠の要約を2〜3文で(いつ誰が何%値上げを発表した等)",
+  "confidence": "high / medium / low"
+}
+
+該当メーカーの発表が見つからない場合は、同分類の資材の一般的な価格改定動向から推定し、confidence を low にしてください。`;
+  let text;
+  if (cfg && cfg.geminiKey) {
+    text = await callGemini(cfg, [{ text: prompt }], { search: true });
+  } else {
+    text = await callClaude({
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    });
+  }
+  try {
+    return { ok: true, ...parseJson(text) };
+  } catch {
+    return { ok: false, raw: text };
+  }
+}
+
+// ---------- AI モード ----------
+async function askAI(question, items, cfg) {
+  const compact = items.slice(0, 120).map((it) => ({
+    材料: it.name, メーカー: it.maker, 規格: it.spec, 分類: it.category,
+    単価: it.unit_price, 購入日: it.invoice_date, 仕入先: it.supplier, 備考: it.notes,
+  }));
+  const prompt = `あなたは建築工事会社の積算担当を支援するアシスタントです。
+以下は社内に蓄積された過去の購入明細データです。
+
+${JSON.stringify(compact)}
+
+このデータを根拠に、次の質問に日本語で簡潔に答えてください。データにない事は推測と明記してください。
+
+質問: ${question}`;
+  if (cfg && cfg.engine === "gemini" && cfg.geminiKey) {
+    const text = await callGemini(cfg, [{ text: prompt }], { search: true });
+    return text;
+  }
+  return callClaude({ messages: [{ role: "user", content: prompt }] });
+}
+
+// ---------- データ整形 ----------
+function flatten(invoices) {
+  const out = [];
+  for (const inv of invoices) {
+    for (const it of inv.items || []) {
+      out.push({
+        ...it,
+        supplier: inv.supplier,
+        invoice_date: inv.invoice_date,
+        invoice_no: inv.invoice_no,
+        invoice_id: inv.id,
+      });
+    }
+  }
+  return out;
+}
+
+function searchRows(rows, query, fields) {
+  const tokens = norm(query).split(" ").filter(Boolean);
+  if (!tokens.length) return [];
+  return rows.filter((it) => {
+    const hay = norm(fields.map((f) => it[f]).join(" "));
+    return tokens.every((t) => hay.includes(t));
+  });
+}
+
+function groupByMaterial(items) {
+  const map = new Map();
+  for (const it of items) {
+    const key = norm(it.name) + "|" + norm(it.maker);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(it);
+  }
+  return [...map.values()].map((rows) => {
+    const sorted = [...rows].sort((a, b) =>
+      (b.invoice_date || "").localeCompare(a.invoice_date || "")
+    );
+    const prices = rows.map((r) => r.unit_price).filter((p) => p != null);
+    return {
+      key: norm(rows[0].name) + "|" + norm(rows[0].maker),
+      name: rows[0].name,
+      maker: rows[0].maker,
+      spec: sorted[0].spec,
+      category: sorted[0].category,
+      notes: sorted.find((r) => r.notes)?.notes || "",
+      latest: sorted[0],
+      count: rows.length,
+      min: prices.length ? Math.min(...prices) : null,
+      max: prices.length ? Math.max(...prices) : null,
+      rows: sorted,
+      staleMonths: monthsSince(sorted[0].invoice_date),
+    };
+  });
+}
+
+// 料金表から一致品を探す
+function matchPriceList(group, pricelists) {
+  const gk = norm(group.name);
+  let best = null;
+  for (const pl of pricelists) {
+    for (const it of pl.items || []) {
+      const nk = norm(it.name);
+      if (nk && (nk.includes(gk) || gk.includes(nk))) {
+        const cand = { ...it, supplier: pl.supplier, effective_date: pl.effective_date || pl.received_at };
+        if (!best || (cand.effective_date || "") > (best.effective_date || "")) best = cand;
+      }
+    }
+  }
+  return best;
+}
+
+// ============================================================
+// UI 部品
+// ============================================================
+function Logo({ size = "large", onClick }) {
+  const chars = ["問", "屋", "さ", "ん"];
+  const cls =
+    size === "large"
+      ? "text-7xl md:text-8xl font-bold tracking-tight"
+      : "text-2xl font-bold tracking-tight";
+  return (
+    <div className={cls + " select-none cursor-pointer flex"} onClick={onClick}>
+      {chars.map((c, i) => (
+        <span key={i} style={{ color: LOGO_COLORS[i % LOGO_COLORS.length] }}>{c}</span>
+      ))}
+    </div>
+  );
+}
+
+function TaxToggle({ mode, onChange }) {
+  return (
+    <div className="flex items-center rounded-full border border-gray-200 bg-white text-sm overflow-hidden shrink-0">
+      {["ex", "in"].map((m) => (
+        <button
+          key={m}
+          onClick={() => onChange(m)}
+          className={
+            "px-3 py-1.5 transition-colors " +
+            (mode === m
+              ? "bg-green-700 text-white"
+              : "text-gray-600 hover:bg-gray-50")
+          }
+        >
+          {m === "ex" ? "税別" : "税込"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact }) {
+  return (
+    <div
+      className={
+        "flex items-center bg-white border border-gray-200 rounded-full shadow hover:shadow-md transition-shadow px-4 " +
+        (compact ? "h-11" : "h-12")
+      }
+      style={{ maxWidth: 640, width: "100%" }}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" className="text-gray-400 shrink-0">
+        <path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14" />
+      </svg>
+      <input
+        autoFocus={autoFocus}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+        placeholder="材料名・メーカー・性質で検索(例: 桧 KD材 / 水性 遮熱)"
+        className="flex-1 outline-none px-3 text-base bg-transparent"
+      />
+      {value && (
+        <button onClick={() => onChange("")} className="text-gray-400 hover:text-gray-600 px-2 text-lg" aria-label="クリア">×</button>
+      )}
+      {onAI && (
+        <button onClick={onAI} className="ml-1 shrink-0 flex items-center gap-1 text-sm rounded-full px-3 py-1.5 bg-green-50 text-green-800 hover:bg-green-100 border border-green-100">
+          <span>✦</span> AI モード
+        </button>
+      )}
+    </div>
+  );
+}
+
+function UploadStatus({ jobs, onRetry }) {
+  if (!jobs.length) return null;
+  return (
+    <div className="w-full max-w-xl mt-6 space-y-2">
+      {jobs.map((j) => (
+        <div key={j.id} className="flex items-center gap-3 text-sm bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
+          <span className="text-lg">📄</span>
+          <span className="flex-1 truncate">{j.name}</span>
+          {j.status === "working" && <span className="text-green-700 animate-pulse">読取中…</span>}
+          {j.status === "done" && (
+            <span className="text-green-700">
+              ✓ {j.count}件を{j.merged ? "同じ請求書に追記" : "登録"}
+              {j.note && <span className="text-amber-600">({j.note})</span>}
+            </span>
+          )}
+          {j.status === "dup" && <span className="text-amber-600">登録済のためスキップ</span>}
+          {j.status === "error" && (
+            <>
+              <span className="text-red-600 flex-1">読取失敗{j.message ? ` — ${j.message}` : ""}</span>
+              {onRetry && (
+                <button
+                  onClick={() => onRetry(j.id)}
+                  className="shrink-0 text-xs text-white bg-red-500 hover:bg-red-600 rounded-full px-3 py-1"
+                >再試行</button>
+              )}
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function inflationSummary(pred, lastPrice) {
+  if (!pred || !pred.ok) return null;
+  const rl = Number(pred.rate_low), rh = Number(pred.rate_high);
+  const pl = Number(pred.predicted_low), ph = Number(pred.predicted_high);
+  if ([rl, rh].some(isNaN)) return null;
+  const rate = Math.round((rl + rh) / 2);
+  let diff = null;
+  if (![pl, ph].some(isNaN) && lastPrice != null) {
+    diff = Math.round((pl + ph) / 2 - Number(lastPrice));
+  }
+  return { rate, diff };
+}
+
+function StaleBadge({ months }) {
+  if (months == null || months < STALE_MONTHS) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 ml-2 align-middle">
+      ⚠ {months}ヶ月前の価格
+    </span>
+  );
+}
+
+// ============================================================
+// メイン
+// ============================================================
+function ShizaiSearch() {
+  const [invoices, setInvoices] = useState([]);
+  const [pricelists, setPricelists] = useState([]);
+  const [inbox, setInbox] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [view, setView] = useState("home"); // home | results | detail | manage | supplier
+  const [query, setQuery] = useState("");
+  const [committed, setCommitted] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [dragging, setDragging] = useState(false);
+  const [aiAnswer, setAiAnswer] = useState(null);
+  const [taxMode, setTaxMode] = useState("ex"); // ex=税別 in=税込
+  const [engine, setEngine] = useState("gemini"); // gemini | claude(GitHub版はGemini推奨)
+  const [geminiKey, setGeminiKey] = useState("");
+  const [geminiModel, setGeminiModel] = useState(DEFAULT_GEMINI_MODEL);
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [settingsMsg, setSettingsMsg] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [connTest, setConnTest] = useState(null); // null | "working" | {claude, gemini}
+  const [predictions, setPredictions] = useState({}); // key -> result
+  const [predicting, setPredicting] = useState({});
+  // 仕入先ページ用
+  const [supName, setSupName] = useState("");
+  const [supDone, setSupDone] = useState(null);
+  const fileRef = useRef(null);
+  const supFileRef = useRef(null);
+  const dragDepth = useRef(0);
+  const failedFilesRef = useRef({}); // jobId -> File(再試行用)
+
+  // ---------- 税表示 ----------
+  const yen = useCallback(
+    (n, itemTax = "ex") => {
+      if (n == null || isNaN(n)) return "—";
+      let v = Number(n);
+      if (taxMode === "in" && itemTax !== "in") v = v * (1 + TAX_RATE);
+      if (taxMode === "ex" && itemTax === "in") v = v / (1 + TAX_RATE);
+      return "¥" + Math.round(v).toLocaleString("ja-JP");
+    },
+    [taxMode]
+  );
+
+  // ---------- 初期読込 ----------
+  useEffect(() => {
+    (async () => {
+      const [inv, pl, ib, st] = await Promise.all([
+        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY),
+      ]);
+      setInvoices(inv || []);
+      setPricelists(pl || []);
+      setInbox(ib || []);
+      if (st?.taxMode) setTaxMode(st.taxMode);
+      if (st?.predictions) setPredictions(st.predictions);
+      if (st?.engine) setEngine(st.engine);
+      if (st?.geminiKey) setGeminiKey(st.geminiKey);
+      if (st?.geminiModel) setGeminiModel(st.geminiModel);
+      if (st?.anthropicKey) setAnthropicKey(st.anthropicKey);
+      setLoaded(true);
+    })();
+  }, []);
+
+  const persistSettings = useCallback(
+    (over = {}) => {
+      const s = { taxMode, predictions, engine, geminiKey, geminiModel, anthropicKey, ...over };
+      sset(SETTINGS_KEY, s).catch(() => {});
+    },
+    [taxMode, predictions, engine, geminiKey, geminiModel, anthropicKey]
+  );
+  const changeTax = (m) => {
+    setTaxMode(m);
+    persistSettings({ taxMode: m });
+  };
+  const engineCfg = { engine, geminiKey: geminiKey.trim(), geminiModel: geminiModel.trim() };
+
+  const allItems = useMemo(() => flatten(invoices), [invoices]);
+  const hits = useMemo(
+    () => searchRows(allItems, committed, ["name", "maker", "spec", "category", "notes", "supplier"]),
+    [allItems, committed]
+  );
+  const groups = useMemo(() => groupByMaterial(hits), [hits]);
+
+  const categories = useMemo(() => {
+    const set = new Map();
+    for (const it of allItems) {
+      const c = (it.category || "").trim();
+      if (c) set.set(c, (set.get(c) || 0) + 1);
+    }
+    return [...set.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [allItems]);
+
+  const runSearch = useCallback(
+    (q) => {
+      const val = (q ?? query).trim();
+      if (!val) return;
+      setCommitted(val);
+      setAiAnswer(null);
+      setView("results");
+    },
+    [query]
+  );
+
+  const runAI = useCallback(async () => {
+    const q = query.trim();
+    if (!q) return;
+    setCommitted(q);
+    setView("results");
+    setAiAnswer("loading");
+    try {
+      const scope = searchRows(allItems, q, ["name", "maker", "spec", "category", "notes", "supplier"]);
+      const ans = await askAI(q, scope.length ? scope : allItems, engineCfg);
+      setAiAnswer(ans || "回答を取得できませんでした。");
+    } catch {
+      setAiAnswer("AIの呼び出しに失敗しました。もう一度お試しください。");
+    }
+  }, [query, allItems]);
+
+  // ---------- 値上がり予測 ----------
+  const runPrediction = useCallback(
+    async (group) => {
+      setPredicting((p) => ({ ...p, [group.key]: true }));
+      try {
+        const res = await predictPrice(group, engineCfg);
+        const withMeta = { ...res, at: new Date().toISOString().slice(0, 10) };
+        const next = { ...predictions, [group.key]: withMeta };
+        setPredictions(next);
+        persistSettings({ predictions: next });
+      } catch {
+        setPredictions((p) => ({
+          ...p,
+          [group.key]: { ok: false, raw: "予測の取得に失敗しました。時間をおいて再実行してください。" },
+        }));
+      } finally {
+        setPredicting((p) => ({ ...p, [group.key]: false }));
+      }
+    },
+    [predictions, persistSettings]
+  );
+
+  // ---------- 請求書取込 ----------
+  const handleFiles = useCallback(async (fileList) => {
+    const files = [...fileList].filter((f) => isPdfFile(f) || isImageFile(f));
+    if (!files.length) return;
+    let current = (await sget(INVOICES_KEY)) || [];
+    for (const f of files) {
+      const jobId = Date.now() + "-" + f.name;
+      setJobs((j) => [...j, { id: jobId, name: f.name, status: "working" }]);
+      try {
+        if (f.size > 40 * 1024 * 1024) {
+          throw new Error("40MBを超えています。ファイルを分割してください");
+        }
+        let prep = await prepareFile(f);
+        let parsed;
+        try {
+          parsed = await extractInvoice(prep, engineCfg);
+        } catch (e) {
+          // 素のPDF送信で通信に失敗した場合、画像に変換して一度だけ再挑戦
+          if (prep.type === "application/pdf" && /通信に失敗/.test((e && e.message) || "")) {
+            prep = await prepareFile(f, true);
+            parsed = await extractInvoice(prep, engineCfg);
+          } else {
+            throw e;
+          }
+        }
+        if (prep.skipped > 0) {
+          parsed.page_note = "先頭8ページのみ読取(残り" + prep.skipped + "ページ)";
+        }
+        const sig = norm(parsed.supplier) + "|" + (parsed.invoice_no || "") + "|" + (parsed.invoice_date || "");
+        // 同じ請求書(番号一致)が既にある場合: スキップではなく明細を統合
+        // (複数ページを写真で分けて撮った場合に対応)
+        const existing = parsed.invoice_no
+          ? current.find((inv) => inv.sig === sig)
+          : null;
+        if (existing) {
+          const seen = new Set(
+            existing.items.map((it) => norm(it.name) + "|" + it.unit_price + "|" + it.quantity)
+          );
+          const fresh = (parsed.items || []).filter(
+            (it) => it.name && !seen.has(norm(it.name) + "|" + it.unit_price + "|" + it.quantity)
+          );
+          if (!fresh.length) {
+            setJobs((j) => j.map((x) => (x.id === jobId ? { ...x, status: "dup" } : x)));
+            continue;
+          }
+          current = current.map((inv) =>
+            inv.sig === sig ? { ...inv, items: [...inv.items, ...fresh] } : inv
+          );
+          await sset(INVOICES_KEY, current);
+          setInvoices(current);
+          setJobs((j) =>
+            j.map((x) =>
+              x.id === jobId
+                ? {
+                    ...x, status: "done", count: fresh.length, merged: true,
+                    note: [parsed.engine_note ? "Gemini不調のためClaudeで読取" : "", parsed.page_note || ""].filter(Boolean).join("・"),
+                  }
+                : x
+            )
+          );
+          continue;
+        }
+        const record = {
+          id: jobId, sig, file: f.name,
+          supplier: parsed.supplier || "不明な仕入先",
+          invoice_no: parsed.invoice_no || "",
+          invoice_date: parsed.invoice_date || "",
+          items: (parsed.items || []).filter((it) => it.name),
+          added_at: new Date().toISOString(),
+        };
+        current = [...current, record];
+        await sset(INVOICES_KEY, current);
+        setInvoices(current);
+        setJobs((j) =>
+          j.map((x) =>
+            x.id === jobId
+              ? {
+                  ...x, status: "done", count: record.items.length,
+                  note: [parsed.engine_note ? "Gemini不調のためClaudeで読取" : "", parsed.page_note || ""].filter(Boolean).join("・"),
+                }
+              : x
+          )
+        );
+      } catch (e) {
+        failedFilesRef.current[jobId] = f;
+        let msg = (e && e.message) || "";
+        if (/通信に失敗/.test(msg)) {
+          // ファイルの問題か、環境の問題かを極小リクエストで判定
+          const alive = await probeClaude();
+          msg = alive
+            ? "送信できましたがこのファイルの処理中に接続が切れました。数分おいて「再試行」を押してください。続く場合はPDFを数ページずつに分けてください"
+            : ENV_BLOCK_MSG;
+        }
+        setJobs((j) =>
+          j.map((x) =>
+            x.id === jobId
+              ? { ...x, status: "error", message: msg }
+              : x
+          )
+        );
+      }
+    }
+  }, [engineCfg.engine, engineCfg.geminiKey, engineCfg.geminiModel]);
+
+  const retryJob = useCallback(
+    (jobId) => {
+      const f = failedFilesRef.current[jobId];
+      if (!f) return;
+      delete failedFilesRef.current[jobId];
+      setJobs((j) => j.filter((x) => x.id !== jobId));
+      handleFiles([f]);
+    },
+    [handleFiles]
+  );
+
+  // ---------- 仕入先: 料金表アップロード(共有受信箱へ) ----------
+  const handleSupplierFiles = useCallback(
+    async (fileList) => {
+      const files = [...fileList].filter(
+        (f) => f.type === "application/pdf" || f.type.startsWith("image/") ||
+          /\.(pdf|jpe?g|png|webp)$/i.test(f.name)
+      );
+      if (!files.length) return;
+      setSupDone("working");
+      try {
+        let box = (await sget(INBOX_KEY, true)) || [];
+        let total = 0;
+        for (const f of files) {
+          let prepS = await prepareFile(f);
+          let parsed;
+          try {
+            parsed = await extractPriceList(prepS, supName, engineCfg);
+          } catch (e) {
+            if (prepS.type === "application/pdf" && /通信に失敗/.test((e && e.message) || "")) {
+              prepS = await prepareFile(f, true);
+              parsed = await extractPriceList(prepS, supName, engineCfg);
+            } else {
+              throw e;
+            }
+          }
+          const sub = {
+            id: Date.now() + "-" + f.name,
+            supplier: supName || "名称未入力の仕入先",
+            file: f.name,
+            effective_date: parsed.effective_date || "",
+            items: (parsed.items || []).filter((it) => it.name),
+            received_at: new Date().toISOString().slice(0, 10),
+            status: "pending",
+          };
+          total += sub.items.length;
+          box = [...box, sub];
+        }
+        await sset(INBOX_KEY, box, true);
+        setInbox(box);
+        // GitHub版はサーバーが無いため、担当者へ返送する添付ファイルも書き出す
+        const newSubs = box.slice(-files.length);
+        const blob = new Blob([JSON.stringify(newSubs, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "料金表_" + (supName || "仕入先") + "_" + new Date().toISOString().slice(0, 10) + ".json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+        setSupDone({ ok: true, count: total });
+      } catch {
+        setSupDone({ ok: false });
+      }
+    },
+    [supName, engineCfg.engine, engineCfg.geminiKey, engineCfg.geminiModel]
+  );
+
+  // ---------- 受信箱: 反映 / 削除 ----------
+  const applySubmission = useCallback(
+    async (sub) => {
+      const nextPl = [...pricelists, { ...sub, status: "applied" }];
+      const nextBox = inbox.map((s) => (s.id === sub.id ? { ...s, status: "applied" } : s));
+      try {
+        await sset(PRICELIST_KEY, nextPl);
+        await sset(INBOX_KEY, nextBox, true);
+        setPricelists(nextPl);
+        setInbox(nextBox);
+      } catch {}
+    },
+    [pricelists, inbox]
+  );
+  const removeSubmission = useCallback(
+    async (id) => {
+      const nextBox = inbox.filter((s) => s.id !== id);
+      try {
+        await sset(INBOX_KEY, nextBox, true);
+        setInbox(nextBox);
+      } catch {}
+    },
+    [inbox]
+  );
+  const deleteInvoice = useCallback(
+    async (id) => {
+      const next = invoices.filter((i) => i.id !== id);
+      try {
+        await sset(INVOICES_KEY, next);
+        setInvoices(next);
+      } catch {}
+    },
+    [invoices]
+  );
+
+  // ---------- 依頼文コピー ----------
+  const copyRequestText = () => {
+    const text = `お世話になっております。
+現在の料金表(写真またはPDF)のご共有をお願いできますでしょうか。
+
+下記リンクを開き、「仕入先の方はこちら」から貴社名をご入力の上、
+料金表の写真かPDFを選ぶだけで自動で読み取られます。
+読み取り後に保存される「料金表_○○.json」ファイルを、
+このメールへの返信に添付してお送りください。
+
+▼読み取りページ
+${window.location.href.split("#")[0]}
+
+お手数をおかけしますが、よろしくお願いいたします。`;
+    navigator.clipboard?.writeText(text);
+  };
+
+  // ---------- D&D ----------
+  const onDragEnter = (e) => { e.preventDefault(); dragDepth.current++; setDragging(true); };
+  const onDragLeave = (e) => { e.preventDefault(); if (--dragDepth.current <= 0) setDragging(false); };
+  const onDrop = (e) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (view === "supplier") handleSupplierFiles(e.dataTransfer.files);
+    else handleFiles(e.dataTransfer.files);
+  };
+
+  const goHome = () => {
+    setView("home"); setQuery(""); setCommitted(""); setDetail(null); setAiAnswer(null);
+  };
+
+  const pendingCount = inbox.filter((s) => s.status === "pending").length;
+
+  // ============================================================
+  return (
+    <div
+      className="min-h-screen bg-white text-gray-800"
+      onDragEnter={onDragEnter}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      style={{ fontFamily: "'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif" }}
+    >
+      <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,application/pdf,image/*" multiple className="hidden"
+        onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+      <input ref={supFileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple className="hidden"
+        onChange={(e) => { handleSupplierFiles(e.target.files); e.target.value = ""; }} />
+
+      {dragging && (
+        <div className="fixed inset-0 z-50 bg-green-700 bg-opacity-90 flex flex-col items-center justify-center text-white pointer-events-none">
+          <div className="text-6xl mb-4">📄</div>
+          <div className="text-2xl font-bold">
+            {view === "supplier" ? "料金表(写真/PDF)をここにドロップ" : "請求書(PDF/写真)をここにドロップ"}
+          </div>
+        </div>
+      )}
+
+      {/* ================= ホーム ================= */}
+      {view === "home" && (
+        <div className="flex flex-col items-center px-4 pb-24" style={{ paddingTop: "13vh" }}>
+          <div className="fixed top-4 right-4 flex items-center gap-2">
+            <TaxToggle mode={taxMode} onChange={changeTax} />
+          </div>
+
+          <Logo size="large" onClick={goHome} />
+          <p className="mt-3 text-sm text-gray-500">
+            塗料・木材・壁紙・金物 — 建築資材の価格と購入履歴をまとめて検索
+          </p>
+
+          <div className="mt-8 w-full flex justify-center">
+            <SearchBar value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI} autoFocus />
+          </div>
+
+          <div className="mt-7 flex flex-wrap justify-center gap-3">
+            <button onClick={() => runSearch()} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">資材を検索</button>
+            <button onClick={() => fileRef.current?.click()} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">請求書を取り込む(PDF/写真)</button>
+            <button onClick={() => setView("manage")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
+              データ管理
+              {pendingCount > 0 && (
+                <span className="ml-1.5 text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5">{pendingCount}</span>
+              )}
+            </button>
+          </div>
+
+          {loaded && categories.length > 0 && (
+            <div className="mt-12 flex flex-wrap justify-center gap-7" style={{ maxWidth: 640 }}>
+              {categories.map(([cat, n]) => (
+                <button key={cat} onClick={() => { setQuery(cat); runSearch(cat); }} className="flex flex-col items-center gap-2 group">
+                  <span className="w-14 h-14 rounded-full bg-green-50 group-hover:bg-green-100 flex items-center justify-center text-xl">
+                    {CATEGORY_ICONS[cat] || "📦"}
+                  </span>
+                  <span className="text-xs text-gray-700 max-w-24 truncate">{cat}</span>
+                  <span className="text-xs text-gray-400 -mt-1">{n}件</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {loaded && invoices.length === 0 && jobs.length === 0 && (
+            <div onClick={() => fileRef.current?.click()}
+              className="mt-12 border-2 border-dashed border-green-200 hover:border-green-400 rounded-2xl px-10 py-8 text-center cursor-pointer transition-colors"
+              style={{ maxWidth: 560 }}>
+              <div className="text-3xl mb-2">📄</div>
+              <div className="font-medium text-gray-700">まだデータがありません</div>
+              <div className="mt-1 text-sm text-gray-500">
+                クリックして請求書のPDFまたは写真を選択してください(スマホで撮った写真もOK。ドラッグ&ドロップも可)。材料名・単価・購入日を自動で読み取り、木材・壁紙・金物など全資材に対応します。
+              </div>
+            </div>
+          )}
+
+          <UploadStatus jobs={jobs} onRetry={retryJob} />
+
+          {loaded && allItems.length > 0 && (
+            <p className="mt-10 text-xs text-gray-400">
+              登録済み: 請求書 {invoices.length} 枚 / 明細 {allItems.length} 件 / 料金表 {pricelists.length} 通
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ================= 共通ヘッダー ================= */}
+      {view !== "home" && view !== "supplier" && (
+        <div className="border-b border-gray-100 px-4 md:px-8 py-4 flex items-center gap-4 sticky top-0 bg-white z-10">
+          <Logo size="small" onClick={goHome} />
+          {view !== "manage" && (
+            <div className="flex-1 max-w-xl">
+              <SearchBar compact value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI} />
+            </div>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <TaxToggle mode={taxMode} onChange={changeTax} />
+            <button onClick={() => fileRef.current?.click()} className="text-sm text-green-800 hover:bg-green-50 rounded-full px-3 py-1.5 shrink-0">📄 取込</button>
+            <button onClick={() => setView("manage")} className="text-sm text-gray-600 hover:bg-gray-50 rounded-full px-3 py-1.5 shrink-0 relative">
+              管理
+              {pendingCount > 0 && (
+                <span className="absolute -top-1 -right-1 text-xs bg-red-500 text-white rounded-full px-1.5">{pendingCount}</span>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= 検索結果 ================= */}
+      {view === "results" && (
+        <div className="px-4 md:px-8 py-5 pb-24" style={{ maxWidth: 780 }}>
+          <UploadStatus jobs={jobs.filter((j) => j.status === "working")} onRetry={retryJob} />
+
+          {aiAnswer && (
+            <div className="mb-6 border border-green-100 bg-green-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 text-green-800 font-medium text-sm mb-2"><span>✦</span> AI モード</div>
+              {aiAnswer === "loading" ? (
+                <div className="text-sm text-green-700 animate-pulse">蓄積データを確認しています…</div>
+              ) : (
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{aiAnswer}</div>
+              )}
+            </div>
+          )}
+
+          <p className="text-sm text-gray-500 mb-4">
+            「{committed}」の検索結果 — {groups.length} 品目({hits.length} 明細)・{taxMode === "ex" ? "税別" : "税込"}表示
+          </p>
+
+          {groups.length === 0 && (
+            <div className="text-gray-600 text-sm leading-relaxed">
+              一致する資材が見つかりませんでした。
+              <ul className="list-disc ml-5 mt-2 text-gray-500">
+                <li>キーワードを短くする(商品名の一部だけ)</li>
+                <li>メーカー名や「水性」「KD材」「不燃」など性質で試す</li>
+                <li>該当期間の請求書PDFが未登録なら、画面にドロップして追加</li>
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-7">
+            {groups.map((g) => {
+              const pl = matchPriceList(g, pricelists);
+              return (
+                <div key={g.key}>
+                  <div className="text-xs text-gray-500 mb-0.5">
+                    {[g.maker, g.category, g.spec].filter(Boolean).join(" › ") || "分類なし"}
+                  </div>
+                  <button onClick={() => { setDetail(g); setView("detail"); }} className="text-xl text-green-800 hover:underline text-left">
+                    {g.name}
+                  </button>
+                  <StaleBadge months={g.staleMonths} />
+                  <div className="text-sm text-gray-700 mt-1">
+                    最終購入 {fmtDate(g.latest.invoice_date)}({g.latest.supplier || "仕入先不明"})—{" "}
+                    <span className="font-medium">単価 {yen(g.latest.unit_price, g.latest.price_tax)}</span>
+                    {g.count > 1 && g.min != null && (
+                      <span className="text-gray-500"> / 過去{g.count}回 ・ {yen(g.min)}〜{yen(g.max)}</span>
+                    )}
+                  </div>
+                  {(() => {
+                    if (g.staleMonths == null || g.staleMonths < STALE_MONTHS) return null;
+                    const s = inflationSummary(predictions[g.key], g.latest.unit_price);
+                    if (s) {
+                      return (
+                        <div className="text-sm mt-0.5 font-medium" style={{ color: "#b45309" }}>
+                          📈 現在は 約 +{s.rate}%
+                          {s.diff != null && s.diff > 0 && <>(+¥{s.diff.toLocaleString("ja-JP")})</>}
+                          {" "}高騰の見込み
+                        </div>
+                      );
+                    }
+                    return (
+                      <button
+                        onClick={() => runPrediction(g)}
+                        disabled={predicting[g.key]}
+                        className="text-xs mt-1 text-amber-700 border border-amber-200 hover:bg-amber-50 rounded-full px-2.5 py-0.5 disabled:opacity-50"
+                      >
+                        {predicting[g.key] ? "調査中…" : "📈 高騰チェック"}
+                      </button>
+                    );
+                  })()}
+                  {pl && (
+                    <div className="text-sm text-blue-800 mt-0.5">
+                      📋 最新料金表: {yen(pl.list_price, pl.price_tax)}
+                      <span className="text-gray-400">({pl.supplier} / {fmtDate(pl.effective_date)})</span>
+                    </div>
+                  )}
+                  {g.notes && <div className="text-sm text-gray-500 mt-0.5 truncate">{g.notes}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ================= 詳細 ================= */}
+      {view === "detail" && detail && (() => {
+        const pl = matchPriceList(detail, pricelists);
+        const pred = predictions[detail.key];
+        const busy = predicting[detail.key];
+        const stale = detail.staleMonths != null && detail.staleMonths >= STALE_MONTHS;
+        return (
+          <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
+            <button onClick={() => setView("results")} className="text-sm text-green-800 hover:underline mb-4">← 検索結果に戻る</button>
+            <h1 className="text-2xl font-bold">
+              {detail.name}
+              <StaleBadge months={detail.staleMonths} />
+            </h1>
+            <div className="text-sm text-gray-500 mt-1">
+              {[detail.maker, detail.category, detail.spec].filter(Boolean).join(" ・ ")}
+            </div>
+            {detail.notes && <div className="text-sm text-gray-600 mt-1">{detail.notes}</div>}
+
+            <div className="flex flex-wrap gap-3 mt-5">
+              <div className="border border-gray-200 rounded-xl px-4 py-3">
+                <div className="text-xs text-gray-500">直近単価({taxMode === "ex" ? "税別" : "税込"})</div>
+                <div className="text-xl font-bold text-green-800">{yen(detail.latest.unit_price, detail.latest.price_tax)}</div>
+              </div>
+              <div className="border border-gray-200 rounded-xl px-4 py-3">
+                <div className="text-xs text-gray-500">過去最安〜最高</div>
+                <div className="text-xl font-bold">{yen(detail.min)} <span className="text-gray-400 text-base">〜</span> {yen(detail.max)}</div>
+              </div>
+              <div className="border border-gray-200 rounded-xl px-4 py-3">
+                <div className="text-xs text-gray-500">購入回数</div>
+                <div className="text-xl font-bold">{detail.count} 回</div>
+              </div>
+              {pl && (
+                <div className="border border-blue-200 bg-blue-50 rounded-xl px-4 py-3">
+                  <div className="text-xs text-blue-700">📋 最新料金表({pl.supplier})</div>
+                  <div className="text-xl font-bold text-blue-800">{yen(pl.list_price, pl.price_tax)}</div>
+                  <div className="text-xs text-blue-600">{fmtDate(pl.effective_date)} 時点</div>
+                </div>
+              )}
+            </div>
+
+            {/* 値上がり予測 */}
+            {stale && (
+              <div className="mt-6 border border-amber-200 bg-amber-50 rounded-xl p-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="text-sm text-amber-800">
+                    <span className="font-medium">最終購入から {detail.staleMonths} ヶ月経過。</span>
+                    現在は価格が上がっている可能性があります。
+                  </div>
+                  <button
+                    onClick={() => runPrediction(detail)}
+                    disabled={busy}
+                    className="text-sm bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-full px-4 py-1.5"
+                  >
+                    {busy ? "市況を調査中…" : pred ? "再予測する" : "値上がり予測を実行"}
+                  </button>
+                </div>
+                {busy && (
+                  <div className="mt-3 text-sm text-amber-700 animate-pulse">
+                    メーカーの価格改定発表や業界の市況をWeb検索で確認しています…
+                  </div>
+                )}
+                {pred && !busy && pred.ok && (
+                  <div className="mt-4">
+                    {(() => {
+                      const s = inflationSummary(pred, detail.latest.unit_price);
+                      return s ? (
+                        <div className="text-lg font-bold text-amber-800">
+                          最終購入({fmtDate(detail.latest.invoice_date)})から{" "}
+                          約 +{s.rate}%
+                          {s.diff != null && <>(+¥{Math.abs(s.diff).toLocaleString("ja-JP")})</>}{" "}
+                          高騰している見込み
+                        </div>
+                      ) : null;
+                    })()}
+                    <div className="flex flex-wrap items-end gap-4 mt-2">
+                      <div>
+                        <div className="text-xs text-amber-700">予測現在単価({taxMode === "ex" ? "税別" : "税込"})</div>
+                        <div className="text-2xl font-bold text-amber-800">
+                          {yen(pred.predicted_low)} 〜 {yen(pred.predicted_high)}
+                        </div>
+                      </div>
+                      <div className="text-sm text-amber-700 pb-1">
+                        レンジ +{pred.rate_low}〜{pred.rate_high}% / 信頼度: {{ high: "高", medium: "中", low: "低" }[pred.confidence] || pred.confidence}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm text-amber-900 leading-relaxed">{pred.summary}</div>
+                    <div className="mt-2 text-xs text-amber-600">
+                      {pred.at} 時点のWeb情報に基づく推定です。見積り確定前には仕入先への確認をおすすめします。
+                    </div>
+                  </div>
+                )}
+                {pred && !busy && !pred.ok && (
+                  <div className="mt-3 text-sm text-amber-800 whitespace-pre-wrap">{pred.raw}</div>
+                )}
+              </div>
+            )}
+
+            <h2 className="mt-8 mb-2 font-medium">購入履歴</h2>
+            <div className="overflow-x-auto border border-gray-200 rounded-xl">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-500 text-left">
+                    <th className="px-4 py-2.5 font-normal">購入日</th>
+                    <th className="px-4 py-2.5 font-normal">仕入先</th>
+                    <th className="px-4 py-2.5 font-normal">規格</th>
+                    <th className="px-4 py-2.5 font-normal text-right">数量</th>
+                    <th className="px-4 py-2.5 font-normal text-right">単価({taxMode === "ex" ? "税別" : "税込"})</th>
+                    <th className="px-4 py-2.5 font-normal text-right">金額</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.rows.map((r, i) => (
+                    <tr key={i} className="border-t border-gray-100">
+                      <td className="px-4 py-2.5">{fmtDate(r.invoice_date)}</td>
+                      <td className="px-4 py-2.5">{r.supplier || "—"}</td>
+                      <td className="px-4 py-2.5">{r.spec || "—"}</td>
+                      <td className="px-4 py-2.5 text-right">{r.quantity ?? "—"} {r.unit || ""}</td>
+                      <td className="px-4 py-2.5 text-right font-medium">{yen(r.unit_price, r.price_tax)}</td>
+                      <td className="px-4 py-2.5 text-right">{yen(r.amount, r.price_tax)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ================= データ管理 ================= */}
+      {view === "manage" && (
+        <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
+          <h1 className="text-xl font-bold mb-1">データ管理</h1>
+
+          {/* 読み取りエンジン設定 */}
+          <div className="mt-5 border border-gray-200 rounded-xl p-4">
+            <h2 className="font-medium">読み取りエンジン</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              請求書・料金表の読み取りに使うAIを選べます。値上がり予測とAIモードはWeb検索連携のためClaudeを使用します。
+            </p>
+            <div className="mt-3 flex flex-col gap-2 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={engine === "claude"} onChange={() => { setEngine("claude"); persistSettings({ engine: "claude" }); }} />
+                Claude(要APIキー)
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={engine === "gemini"} onChange={() => { setEngine("gemini"); persistSettings({ engine: "gemini" }); }} />
+                Google Gemini(要APIキー)
+              </label>
+            </div>
+            {engine === "claude" && (
+              <div className="mt-3" style={{ maxWidth: 480 }}>
+                <label className="text-xs text-gray-600">Claude APIキー(console.anthropic.com で発行)</label>
+                <input
+                  type="password"
+                  value={anthropicKey}
+                  onChange={(e) => setAnthropicKey(e.target.value)}
+                  placeholder="sk-ant-..."
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                />
+                <p className="text-xs text-gray-400 mt-1">キーはこのブラウザ内にのみ保存されます。</p>
+              </div>
+            )}
+            {engine === "gemini" && (
+              <div className="mt-3 space-y-2" style={{ maxWidth: 480 }}>
+                <div>
+                  <label className="text-xs text-gray-600">Gemini APIキー</label>
+                  <div className="mt-0.5 flex items-center border border-gray-300 rounded-lg focus-within:border-green-600 bg-white">
+                    <input
+                      type={showKey ? "text" : "password"}
+                      value={geminiKey}
+                      onChange={(e) => setGeminiKey(e.target.value)}
+                      placeholder="AIza..."
+                      className="flex-1 px-3 py-2 text-sm outline-none bg-transparent rounded-lg"
+                    />
+                    <button
+                      onClick={() => setShowKey(!showKey)}
+                      className="px-3 text-gray-500 hover:text-gray-700 text-sm shrink-0"
+                      title={showKey ? "隠す" : "表示する"}
+                    >{showKey ? "🙈 隠す" : "👁 表示"}</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-600">モデル名(通常は変更不要)</label>
+                  <input
+                    value={geminiModel}
+                    onChange={(e) => setGeminiModel(e.target.value)}
+                    className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  />
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  キーは Google AI Studio(aistudio.google.com)で無料発行できます。このキーは貴社アカウント内にのみ保存され、共有リンクを開いた相手には見えません。Geminiでの読み取りに失敗した場合は自動的にClaudeで読み取ります。
+                </p>
+              </div>
+            )}
+            <div className="mt-3 flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => { persistSettings(); setSettingsMsg("保存しました"); setTimeout(() => setSettingsMsg(""), 2000); }}
+                className="text-sm text-white bg-green-700 hover:bg-green-800 rounded px-4 py-1.5"
+              >設定を保存</button>
+              {settingsMsg && <span className="text-sm text-green-700">✓ {settingsMsg}</span>}
+              <button
+                onClick={async () => {
+                  setConnTest("working");
+                  const result = {};
+                  try {
+                    await callClaudeRaw({ messages: [{ role: "user", content: "OKとだけ返答" }] });
+                    result.claude = { ok: true };
+                  } catch (e) {
+                    result.claude = { ok: false, msg: (e && e.message) || "" };
+                  }
+                  try {
+                    if (window.claude && window.claude.complete) {
+                      await window.claude.complete("OKとだけ返答");
+                      result.legacy = { ok: true };
+                    } else {
+                      result.legacy = { ok: false, msg: "この画面では内部経路が提供されていません" };
+                    }
+                  } catch (e) {
+                    result.legacy = { ok: false, msg: (e && e.message) || "呼び出しに失敗" };
+                  }
+                  if (geminiKey.trim()) {
+                    try {
+                      await callGemini(
+                        { geminiKey: geminiKey.trim(), geminiModel: geminiModel.trim() },
+                        [{ text: '{"ok":true} とだけJSONで返答' }]
+                      );
+                      result.gemini = { ok: true };
+                    } catch (e) {
+                      result.gemini = { ok: false, msg: (e && e.message) || "" };
+                    }
+                  } else {
+                    result.gemini = { ok: false, msg: "APIキーが未入力です" };
+                  }
+                  setConnTest(result);
+                }}
+                disabled={connTest === "working"}
+                className="text-sm text-green-800 border border-green-300 hover:bg-green-50 rounded px-4 py-1.5 disabled:opacity-50"
+              >{connTest === "working" ? "テスト中…" : "接続テスト"}</button>
+            </div>
+            {connTest && connTest !== "working" && (
+              <div className="mt-3 text-sm space-y-1 border-t border-gray-100 pt-3">
+                <div className={connTest.claude.ok ? "text-green-700" : "text-red-600"}>
+                  {connTest.claude.ok ? "✓ Claude: 接続OK" : "✗ Claude: " + connTest.claude.msg}
+                </div>
+                <div className={connTest.gemini.ok ? "text-green-700" : "text-red-600"}>
+                  {connTest.gemini.ok ? "✓ Gemini: 接続OK" : "✗ Gemini: " + connTest.gemini.msg}
+                </div>
+                {connTest.legacy && (
+                  <div className={connTest.legacy.ok ? "text-green-700" : "text-red-600"}>
+                    {connTest.legacy.ok ? "✓ 内部経路: 接続OK" : "✗ 内部経路: " + connTest.legacy.msg}
+                  </div>
+                )}
+                {!connTest.claude.ok && (
+                  <div className="text-xs text-red-500 leading-relaxed whitespace-pre-wrap">{ENV_BLOCK_MSG}</div>
+                )}
+                {!connTest.gemini.ok && connTest.claude.ok && (
+                  <div className="text-xs text-gray-500 leading-relaxed">
+                    Geminiに接続できない場合でも、読み取りは自動的にClaudeで実行されるため利用は可能です。
+                    この画面(Claude内)はセキュリティ上、外部サービスへの接続が制限されている場合があります。
+                    その場合Geminiは、将来このシステムを自社Webとして公開する段階で有効になります。
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 料金表の受信箱 */}
+          <div className="mt-5">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h2 className="font-medium">仕入先からの料金表(受信箱)</h2>
+              <label className="text-xs text-green-800 border border-green-200 hover:bg-green-50 rounded-full px-3 py-1 cursor-pointer">
+                返送ファイルを取り込む
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files && e.target.files[0];
+                    e.target.value = "";
+                    if (!f) return;
+                    try {
+                      const subs = JSON.parse(await f.text());
+                      const list = Array.isArray(subs) ? subs : [subs];
+                      const valid = list.filter((s) => s && Array.isArray(s.items));
+                      if (!valid.length) throw new Error();
+                      const nextBox = [...inbox, ...valid.map((s) => ({ ...s, status: "pending" }))];
+                      await sset(INBOX_KEY, nextBox, true);
+                      setInbox(nextBox);
+                    } catch {
+                      window.alert("ファイルを読み込めませんでした。仕入先ページで保存された「料金表_○○.json」を選択してください");
+                    }
+                  }}
+                />
+              </label>
+              <button onClick={copyRequestText} className="text-xs text-green-800 border border-green-200 hover:bg-green-50 rounded-full px-3 py-1">
+                依頼文をコピー
+              </button>
+              <button onClick={() => { setSupDone(null); setView("supplier"); }} className="text-xs text-gray-600 border border-gray-200 hover:bg-gray-50 rounded-full px-3 py-1">
+                仕入先向けページを確認
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+              使い方: このページのURLを仕入先に送り、「仕入先の方はこちら」から料金表を読み取ってもらいます。読み取り結果は「料金表_○○.json」というファイルで保存されるので、メール等で返送してもらい、上の「返送ファイルを取り込む」でここに追加します。「反映」を押すと検索結果に最新料金表価格として表示されます。
+              ※貴社の仕入価格・購入履歴(掛け率がわかる情報)はこのブラウザ内にのみ保存され、URLを開いた仕入先には一切表示されません。
+            </p>
+            {inbox.length === 0 ? (
+              <div className="text-sm text-gray-400 mt-3">まだ届いていません。</div>
+            ) : (
+              <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                {inbox.map((s) => (
+                  <div key={s.id} className="flex items-center gap-4 px-4 py-3">
+                    <span className="text-lg">📋</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{s.supplier}</div>
+                      <div className="text-xs text-gray-500">
+                        受信 {s.received_at} ・ 商品 {s.items.length} 件 ・ {s.file}
+                        {s.effective_date && <> ・ 適用日 {s.effective_date}</>}
+                      </div>
+                    </div>
+                    {s.status === "applied" ? (
+                      <span className="text-xs text-green-700 shrink-0">✓ 反映済</span>
+                    ) : (
+                      <button onClick={() => applySubmission(s)} className="text-sm text-white bg-green-700 hover:bg-green-800 rounded px-3 py-1.5 shrink-0">
+                        反映
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { if (window.confirm(`「${s.supplier}」の受信データを削除しますか?`)) removeSubmission(s.id); }}
+                      className="text-sm text-red-600 hover:bg-red-50 rounded px-2 py-1.5 shrink-0"
+                    >削除</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* バックアップ */}
+          <div className="mt-8 flex items-center gap-3 flex-wrap">
+            <h2 className="font-medium">バックアップ</h2>
+            <button
+              onClick={() => {
+                const data = { invoices, pricelists, exported_at: new Date().toISOString() };
+                const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = "問屋さんバックアップ_" + new Date().toISOString().slice(0, 10) + ".json";
+                a.click();
+                URL.revokeObjectURL(a.href);
+              }}
+              className="text-xs text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-full px-3 py-1"
+            >書き出す</button>
+            <label className="text-xs text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-full px-3 py-1 cursor-pointer">
+              読み込む
+              <input type="file" accept=".json" className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files && e.target.files[0];
+                  e.target.value = "";
+                  if (!f) return;
+                  try {
+                    const d = JSON.parse(await f.text());
+                    if (Array.isArray(d.invoices)) { await sset(INVOICES_KEY, d.invoices); setInvoices(d.invoices); }
+                    if (Array.isArray(d.pricelists)) { await sset(PRICELIST_KEY, d.pricelists); setPricelists(d.pricelists); }
+                    window.alert("バックアップを読み込みました");
+                  } catch { window.alert("バックアップファイルを読み込めませんでした"); }
+                }} />
+            </label>
+            <span className="text-xs text-gray-400">データはブラウザ内保存のため、PC入替時はこちらで移行してください</span>
+          </div>
+
+          {/* 請求書一覧 */}
+          <h2 className="font-medium mt-8">取り込んだ請求書</h2>
+          <UploadStatus jobs={jobs} onRetry={retryJob} />
+          {invoices.length === 0 ? (
+            <div className="text-sm text-gray-400 mt-3">まだ請求書が登録されていません。</div>
+          ) : (
+            <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+              {[...invoices]
+                .sort((a, b) => (b.invoice_date || "").localeCompare(a.invoice_date || ""))
+                .map((inv) => (
+                  <div key={inv.id} className="flex items-center gap-4 px-4 py-3">
+                    <span className="text-lg">📄</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">
+                        {inv.supplier}
+                        {inv.invoice_no && <span className="text-gray-400 font-normal"> #{inv.invoice_no}</span>}
+                      </div>
+                      <div className="text-xs text-gray-500">{fmtDate(inv.invoice_date)} ・ 明細 {inv.items.length} 件 ・ {inv.file}</div>
+                    </div>
+                    <button
+                      onClick={() => { if (window.confirm(`「${inv.supplier} ${inv.invoice_date}」を削除しますか?`)) deleteInvoice(inv.id); }}
+                      className="text-sm text-red-600 hover:bg-red-50 rounded px-3 py-1.5 shrink-0"
+                    >削除</button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ================= 仕入先向けアップロードページ ================= */}
+      {view === "supplier" && (
+        <div className="flex flex-col items-center px-4 pb-24" style={{ paddingTop: "10vh" }}>
+          <Logo size="large" />
+          <h1 className="mt-6 text-xl font-bold">料金表のご提供ページ(仕入先さま用)</h1>
+          <p className="mt-2 text-sm text-gray-500 text-center leading-relaxed" style={{ maxWidth: 480 }}>
+            いつもお世話になっております。<br />
+            貴社名をご入力の上、現在の料金表(写真またはPDF)をアップロードしてください。内容は自動で読み取られ、担当者が確認します。<br />
+            <span className="text-gray-400">このページからアップロード内容以外の社内データを見ることはできません。</span>
+          </p>
+
+          <div className="mt-6 w-full" style={{ maxWidth: 440 }}>
+            <label className="text-sm text-gray-600">貴社名</label>
+            <input
+              value={supName}
+              onChange={(e) => setSupName(e.target.value)}
+              placeholder="例: 〇〇建材株式会社"
+              className="mt-1 w-full border border-gray-300 rounded-lg px-4 py-2.5 outline-none focus:border-green-600"
+            />
+
+            <div
+              onClick={() => supName.trim() ? supFileRef.current?.click() : window.alert("先に貴社名をご入力ください")}
+              className="mt-4 border-2 border-dashed border-green-300 hover:border-green-500 rounded-2xl px-8 py-10 text-center cursor-pointer transition-colors"
+            >
+              <div className="text-3xl mb-2">📋</div>
+              <div className="font-medium text-gray-700">料金表をここにドロップ</div>
+              <div className="mt-1 text-sm text-gray-500">またはクリックして選択(写真 / PDF、複数可)</div>
+            </div>
+
+            {supDone === "working" && (
+              <div className="mt-4 text-sm text-green-700 animate-pulse text-center">料金表を読み取っています…</div>
+            )}
+            {supDone && supDone !== "working" && supDone.ok && (
+              <div className="mt-4 border border-green-200 bg-green-50 rounded-xl p-4 text-center">
+                <div className="text-green-800 font-medium">✓ 読み取りが完了し、ファイルを保存しました</div>
+                <div className="text-sm text-green-700 mt-1">
+                  {supDone.count} 件の商品を読み取りました。ダウンロードされた「料金表_○○.json」ファイルを、メール等でご担当者へご返送ください。ご協力ありがとうございました。
+                </div>
+              </div>
+            )}
+            {supDone && supDone !== "working" && supDone.ok === false && (
+              <div className="mt-4 border border-red-200 bg-red-50 rounded-xl p-4 text-center text-sm text-red-700">
+                読み取りに失敗しました。ファイルをご確認の上、もう一度お試しください。
+              </div>
+            )}
+          </div>
+
+          <button onClick={goHome} className="mt-10 text-xs text-gray-400 hover:text-gray-600">← 社内用トップに戻る</button>
+        </div>
+      )}
+
+      {/* フッター */}
+      <div className="fixed bottom-0 inset-x-0 flex items-center justify-center gap-4 text-xs text-gray-400 py-2 bg-white border-t border-gray-50">
+        <span>問屋さん — 仕入価格はこのブラウザ内にのみ保存されます(端末を変える場合は下記バックアップを)</span>
+        {view === "home" && (
+          <button onClick={() => { setSupDone(null); setView("supplier"); }} className="text-green-700 hover:underline">
+            仕入先の方はこちら(料金表アップロード)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ShizaiSearch />);
+
+</script>
+</body>
+</html>
