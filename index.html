@@ -1318,18 +1318,15 @@ ${window.location.href.split("#")[0]}
       {/* ================= ホーム ================= */}
       {view === "home" && (
         <div className="flex flex-col items-center px-4 pb-24" style={{ paddingTop: "13vh" }}>
-          <div className="fixed top-4 right-4 flex items-center gap-2">
-            <TaxToggle mode={taxMode} onChange={changeTax} />
-          </div>
-
           <Logo size="large" onClick={goHome} />
           <p className="mt-3 text-sm text-gray-500">
             塗料・木材・壁紙・金物 — 建築資材の価格と購入履歴をまとめて検索
           </p>
 
-          <div className="mt-8 w-full flex justify-center">
+          <div className="mt-8 w-full flex flex-wrap justify-center items-center gap-3">
             <SearchBar value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI} autoFocus
               history={history} onPick={(h) => { setQuery(h); runSearch(h); }} onRemove={removeHistory} />
+            <TaxToggle mode={taxMode} onChange={changeTax} />
           </div>
 
           <div className="mt-7 flex flex-wrap justify-center gap-3">
@@ -1389,13 +1386,15 @@ ${window.location.href.split("#")[0]}
           >← 戻る</button>
           <Logo size="small" onClick={goHome} />
           {view !== "manage" && (
-            <div className="flex-1 max-w-xl">
-              <SearchBar compact value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI}
-                history={history} onPick={(h) => { setQuery(h); runSearch(h); }} onRemove={removeHistory} />
-            </div>
+            <>
+              <div className="flex-1 max-w-xl">
+                <SearchBar compact value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI}
+                  history={history} onPick={(h) => { setQuery(h); runSearch(h); }} onRemove={removeHistory} />
+              </div>
+              <TaxToggle mode={taxMode} onChange={changeTax} />
+            </>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <TaxToggle mode={taxMode} onChange={changeTax} />
             <button onClick={() => fileRef.current?.click()} className="text-sm text-green-800 hover:bg-green-50 rounded-full px-3 py-1.5 shrink-0">📄 取込</button>
             <button onClick={() => go("manage")} className="text-sm text-gray-600 hover:bg-gray-50 rounded-full px-3 py-1.5 shrink-0 relative">
               管理
