@@ -11,11 +11,13 @@
 - 仕入先に料金表を読み取ってもらい、返送ファイルで反映する受信箱
 - データのバックアップ/復元(ブラウザ内保存)
 
-## 公開のしかた(GitHub Pages)
+## アプリのアドレス
 
-1. このリポジトリの Settings → Pages を開く
-2. Source: 「Deploy from a branch」、Branch: 「main」「/(root)」で Save
-3. 1〜2分後に表示されるURLがアプリのアドレスです
+<https://yamamoto-coder.github.io/zairyou/>
+
+GitHub Pages で配信しています。
+`main` ブランチに push すると1〜2分で反映されます。
+更新が見えないときは Ctrl+F5 で強制再読み込みしてください。
 
 ## 初期設定
 

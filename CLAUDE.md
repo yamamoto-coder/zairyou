@@ -12,38 +12,29 @@
 - 読み取りAIは Google Gemini(利用者が画面からAPIキーを設定。キーは
   各ブラウザの localStorage に保存され、リポジトリには含まれない)
 
+## 公開先(2026-08-09 に公開済み)
+
+| 項目 | 値 |
+| --- | --- |
+| リポジトリ | `yamamoto-coder/zairyou` |
+| 公開 URL | <https://yamamoto-coder.github.io/zairyou/> |
+| ブランチ | `main`(`/(root)` を GitHub Pages が配信) |
+
+このマシンには `gh` CLI が入っていません。
+リポジトリと Pages の設定はユーザーが GitHub の Web UI で済ませてあるため、Claude Code 側は素の `git` だけで完結します。
+push は Git Credential Manager に保存済みの資格情報で通ります。
+
 ## 想定タスク
 
-### 初回公開(「GitHubにアップロードして公開して」と言われたら)
+### 更新(`index.html` を修正した後)
 
-1. `gh auth status` で GitHub CLI のログインを確認。未ログインなら
-   `gh auth login` をユーザーに実行してもらう(認証操作は本人に委ねる)
-2. このディレクトリで git 初期化〜push:
-   ```
-   git init -b main
-   git add index.html README.md CLAUDE.md .gitignore
-   git commit -m "feat: 問屋さん 初回公開"
-   gh repo create tonya --public --source=. --push
-   ```
-   ※リポジトリ名の希望があればそれに従う。迷ったら public / `tonya`。
-3. GitHub Pages を有効化:
-   ```
-   gh api repos/{owner}/tonya/pages -X POST \
-     -f "source[branch]=main" -f "source[path]=/" 
-   ```
-   409(既に有効)は成功扱いでよい。
-4. 公開URL(`https://<owner>.github.io/tonya/`)を
-   `gh api repos/{owner}/tonya/pages --jq .html_url` で取得して報告する。
-5. 最後にユーザーへ初期設定を案内: アプリの
-   「データ管理 → 読み取りエンジン → Gemini APIキー入力 → 保存 → 接続テスト」。
+1. 修正内容ごとにコミットを分ける(`git-commit` スキルに従う)。
+2. `git push` する。
+3. Pages は push から1〜2分で反映されます。ユーザーには Ctrl+F5 での強制再読み込みを案内してください(CDN キャッシュ対策)。
 
-### 更新(index.html を修正した後)
+### 初期設定の案内
 
-```
-git add -A && git commit -m "<変更内容>" && git push
-```
-Pages は push から1〜2分で反映。ユーザーには Ctrl+F5 での
-強制再読み込みを案内する(CDNキャッシュ対策)。
+アプリの「データ管理 → 読み取りエンジン → Gemini API キー入力 → 保存 → 接続テスト」の順に案内します。
 
 ## 厳守事項
 
