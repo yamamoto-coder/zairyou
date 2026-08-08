@@ -2,6 +2,6 @@
 *.key
 *.env
 .env*
-секрет*
+secret*
 backup*.json
 問屋さんバックアップ*.json
