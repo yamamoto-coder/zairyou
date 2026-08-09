@@ -821,6 +821,32 @@ function searchRows(rows, query, fields) {
   });
 }
 
+// ---------- 五十音インデックス(電話帳方式) ----------
+// norm() がカタカナ→ひらがな・全角英数→半角に揃えるので、先頭1文字で行を判定する。
+// 読みが取れない漢字・記号始まりは「他」にまとめる。
+const KANA_INDEX_ORDER = ["あ", "か", "さ", "た", "な", "は", "ま", "や", "ら", "わ", "英数", "他"];
+const KANA_ROWS = {
+  あ: "ぁあぃいぅうぇえぉおゔ",
+  か: "かがきぎくぐけげこご",
+  さ: "さざしじすずせぜそぞ",
+  た: "ただちぢっつづてでとど",
+  な: "なにぬねの",
+  は: "はばぱひびぴふぶぷへべぺほぼぽ",
+  ま: "まみむめも",
+  や: "ゃやゅゆょよ",
+  ら: "らりるれろ",
+  わ: "ゎわゐゑをん",
+};
+function kanaIndexKey(name) {
+  const c = norm(name || "").charAt(0);
+  if (!c) return "他";
+  if (/[a-z0-9]/.test(c)) return "英数";
+  for (const k of Object.keys(KANA_ROWS)) {
+    if (KANA_ROWS[k].includes(c)) return k;
+  }
+  return "他";
+}
+
 function groupByMaterial(items) {
   const map = new Map();
   for (const it of items) {
@@ -2059,8 +2085,55 @@ ${window.location.href.split("#")[0]}
             </div>
           )}
 
-          <div className="space-y-7">
-            {groups.map((g) => {
+          {(() => {
+            // 五十音順に並べ替え、行(あ・か・さ…)ごとのセクションに分ける
+            const collator = new Intl.Collator("ja");
+            const sorted = [...groups].sort((a, b) => {
+              const ka = KANA_INDEX_ORDER.indexOf(kanaIndexKey(a.name));
+              const kb = KANA_INDEX_ORDER.indexOf(kanaIndexKey(b.name));
+              if (ka !== kb) return ka - kb;
+              return collator.compare(norm(a.name), norm(b.name));
+            });
+            const sections = [];
+            for (const g of sorted) {
+              const k = kanaIndexKey(g.name);
+              let sec = sections[sections.length - 1];
+              if (!sec || sec.key !== k) { sec = { key: k, groups: [] }; sections.push(sec); }
+              sec.groups.push(g);
+            }
+            const present = new Set(sections.map((s) => s.key));
+            return (
+              <>
+                {/* 右端の五十音インデックスバー(電話帳方式) */}
+                {groups.length > 0 && (
+                  <div
+                    className="fixed z-20 flex flex-col items-center rounded-full bg-white bg-opacity-90 border border-gray-100 shadow-sm px-0.5 py-1"
+                    style={{ right: 2, top: "50%", transform: "translateY(-50%)", fontSize: 11 }}
+                  >
+                    {KANA_INDEX_ORDER.map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => {
+                          const el = document.getElementById("kana-" + k);
+                          if (el) el.scrollIntoView({ block: "start" });
+                        }}
+                        disabled={!present.has(k)}
+                        className={
+                          "px-1 leading-4 " +
+                          (present.has(k) ? "text-green-700 font-medium" : "text-gray-300")
+                        }
+                      >{k === "英数" ? "A" : k === "他" ? "#" : k}</button>
+                    ))}
+                  </div>
+                )}
+                <div className="space-y-8">
+                  {sections.map((sec) => (
+                    <div key={sec.key} id={"kana-" + sec.key} style={{ scrollMarginTop: 140 }}>
+                      <div className="text-xs font-bold text-gray-400 border-b border-gray-100 pb-1 mb-4">
+                        {sec.key}
+                      </div>
+                      <div className="space-y-7">
+                        {sec.groups.map((g) => {
               const pl = matchPriceList(g, pricelists);
               return (
                 <div key={g.key}>
@@ -2109,8 +2182,14 @@ ${window.location.href.split("#")[0]}
                   {g.notes && <div className="text-sm text-gray-500 mt-0.5 truncate">{g.notes}</div>}
                 </div>
               );
-            })}
-          </div>
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
