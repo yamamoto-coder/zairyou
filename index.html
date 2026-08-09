@@ -68,6 +68,8 @@ const HISTORY_MAX = 10;
 const SITES_KEY = "shizai-delivery-sites-v1"; // 登録済み納品先(倉庫・会社)
 const TAGS_KEY = "shizai-ai-tags-v1"; // AI検索タグ(資材キー → タグ)
 const CART_KEY = "shizai-cart-v1"; // 発注カート
+const ADDR_KEY = "shizai-address-history-v1"; // 納品先住所の入力履歴
+const ADDR_MAX = 8;
 
 const TAX_RATE = 0.1;
 const STALE_MONTHS = 6; // これ以上前の購入は「価格が古い」扱い
@@ -1061,6 +1063,7 @@ function ShizaiSearch() {
   const [order, setOrder] = useState(null); // 発注モーダル {mode, supplier, items, place, siteId, address, copied}
   const [cart, setCart] = useState([]); // 発注カート
   const [cartMsg, setCartMsg] = useState(false); // カート追加の一言フィードバック
+  const [addrHistory, setAddrHistory] = useState([]); // 納品先住所の入力履歴
   const [aiTags, setAiTags] = useState({}); // AI検索タグ {groupKey: {tags, summary, at}}
   const [tagging, setTagging] = useState(false); // まとめて調査の進捗 {done, total, fail, current, finished}
   const [tagBusy, setTagBusy] = useState(false); // 詳細画面の単発調査中
@@ -1101,10 +1104,11 @@ function ShizaiSearch() {
   // ---------- 初期読込 ----------
   useEffect(() => {
     (async () => {
-      const [inv, pl, ib, st, hist, st2, tg, ct] = await Promise.all([
-        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY),
+      const [inv, pl, ib, st, hist, st2, tg, ct, ah] = await Promise.all([
+        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY),
       ]);
       setCart(Array.isArray(ct) ? ct : []);
+      setAddrHistory(Array.isArray(ah) ? ah : []);
       setInvoices(inv || []);
       setPricelists(pl || []);
       setInbox(ib || []);
@@ -1690,7 +1694,26 @@ function ShizaiSearch() {
     order.items.length > 0 &&
     order.items.every((it) => Number(it.qty) > 0) &&
     (order.place !== "倉庫" || sites.length > 0);
+  // 現場・その他の住所は、送信操作をした時点で履歴に残す(次回はクリックで再利用)
+  const recordOrderAddress = () => {
+    if (!order || order.place === "倉庫") return;
+    const a = order.address.trim();
+    if (!a) return;
+    setAddrHistory((prev) => {
+      const next = [a, ...prev.filter((x) => x !== a)].slice(0, ADDR_MAX);
+      sset(ADDR_KEY, next).catch(() => {});
+      return next;
+    });
+  };
+  const removeAddr = (a) => {
+    setAddrHistory((prev) => {
+      const next = prev.filter((x) => x !== a);
+      sset(ADDR_KEY, next).catch(() => {});
+      return next;
+    });
+  };
   const copyOrder = () => {
+    recordOrderAddress();
     const text = buildOrderText();
     const fallback = () => {
       const ta = document.createElement("textarea");
@@ -1711,9 +1734,11 @@ function ShizaiSearch() {
     }
   };
   const lineOrder = () => {
+    recordOrderAddress();
     window.open("https://line.me/R/share?text=" + encodeURIComponent(buildOrderText()), "_blank");
   };
   const mailOrder = () => {
+    recordOrderAddress();
     const subject =
       order && order.mode === "cart"
         ? "発注: " + order.items.length + "品目(" + (order.supplier || "") + ")"
@@ -2790,6 +2815,30 @@ ${window.location.href.split("#")[0]}
                     placeholder="例: 〇〇市〇〇町1-2-3 〇〇様邸"
                     className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
                   />
+                  {addrHistory.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-gray-400">履歴:</span>
+                      {addrHistory.map((a) => (
+                        <span
+                          key={a}
+                          onClick={() => setOrder({ ...order, address: a, copied: false })}
+                          className={
+                            "flex items-center gap-0.5 border rounded-full pl-2.5 pr-1 py-0.5 cursor-pointer " +
+                            (order.address === a
+                              ? "border-green-400 bg-green-50 text-green-800"
+                              : "border-gray-200 text-gray-600 hover:border-green-300 hover:bg-green-50")
+                          }
+                        >
+                          <span className="truncate" style={{ maxWidth: 220 }}>{a}</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); removeAddr(a); }}
+                            className="text-gray-300 hover:text-gray-600 px-1"
+                            aria-label="この履歴を削除"
+                          >×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div>
