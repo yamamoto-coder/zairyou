@@ -65,6 +65,7 @@ const INBOX_KEY = "shizai-pricelist-inbox-v1"; // 仕入先からの受信箱(�
 const SETTINGS_KEY = "shizai-settings-v1";
 const HISTORY_KEY = "shizai-search-history-v1"; // 検索履歴(このブラウザのみ)
 const HISTORY_MAX = 10;
+const SITES_KEY = "shizai-delivery-sites-v1"; // 登録済み納品先(倉庫・会社)
 
 const TAX_RATE = 0.1;
 const STALE_MONTHS = 6; // これ以上前の購入は「価格が古い」扱い
@@ -950,6 +951,10 @@ function ShizaiSearch() {
   const [history, setHistory] = useState([]); // 検索履歴(新しい順)
   const [navStack, setNavStack] = useState([]); // 「戻る」用の画面履歴
   const [docView, setDocView] = useState(null); // 原本ビューア {invoice, docs}
+  const [sites, setSites] = useState([]); // 登録済み納品先
+  const [siteName, setSiteName] = useState(""); // 納品先登録フォーム
+  const [siteAddr, setSiteAddr] = useState("");
+  const [order, setOrder] = useState(null); // 発注モーダル {qty, place, siteId, address, copied}
   const [detail, setDetail] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [dragging, setDragging] = useState(false);
@@ -987,13 +992,14 @@ function ShizaiSearch() {
   // ---------- 初期読込 ----------
   useEffect(() => {
     (async () => {
-      const [inv, pl, ib, st, hist] = await Promise.all([
-        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY),
+      const [inv, pl, ib, st, hist, st2] = await Promise.all([
+        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY),
       ]);
       setInvoices(inv || []);
       setPricelists(pl || []);
       setInbox(ib || []);
       setHistory(Array.isArray(hist) ? hist : []);
+      setSites(Array.isArray(st2) ? st2 : []);
       if (st?.taxMode) setTaxMode(st.taxMode);
       if (st?.predictions) setPredictions(st.predictions);
       if (st?.engine) setEngine(st.engine);
@@ -1380,6 +1386,92 @@ function ShizaiSearch() {
     [invoices, detail, committed, goBack]
   );
 
+  // ---------- 納品先の登録 ----------
+  const saveSites = (next) => {
+    setSites(next);
+    sset(SITES_KEY, next).catch(() => {});
+  };
+  const addSite = () => {
+    const n = siteName.trim();
+    if (!n) return;
+    saveSites([...sites, { id: Date.now() + "", name: n, address: siteAddr.trim() }]);
+    setSiteName("");
+    setSiteAddr("");
+  };
+  const removeSite = (id) => saveSites(sites.filter((s) => s.id !== id));
+
+  // ---------- 発注 ----------
+  const openOrder = () => {
+    if (!detail) return;
+    setOrder({
+      qty: "1",
+      place: sites.length ? "倉庫" : "現場",
+      siteId: sites[0]?.id || "",
+      address: "",
+      copied: false,
+    });
+  };
+  const buildOrderText = () => {
+    if (!order || !detail) return "";
+    const supplier = detail.latest.supplier || "";
+    const unit = detail.latest.unit || "";
+    let placeLabel = order.place;
+    let addr = "";
+    if (order.place === "倉庫") {
+      const site = sites.find((s) => s.id === order.siteId);
+      if (site) {
+        placeLabel = "倉庫(" + site.name + ")";
+        addr = site.address || "";
+      }
+    } else {
+      addr = order.address.trim();
+    }
+    const lines = [
+      supplier ? supplier + " 御中" : null,
+      supplier ? "" : null,
+      "いつもお世話になっております。",
+      "下記のとおり発注いたします。",
+      "",
+      "■品名: " + detail.name + (detail.spec ? " " + detail.spec : "") + (detail.maker ? "(" + detail.maker + ")" : ""),
+      "■数量: " + order.qty + (unit ? " " + unit : ""),
+      "■納品場所: " + placeLabel,
+      addr ? "■納品先住所: " + addr : null,
+      "",
+      "納期のご連絡をお願いいたします。",
+      "以上、よろしくお願いいたします。",
+    ];
+    return lines.filter((l) => l !== null).join("\n");
+  };
+  const orderValid = order && Number(order.qty) > 0 && (order.place !== "倉庫" || sites.length > 0);
+  const copyOrder = () => {
+    const text = buildOrderText();
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch {}
+      ta.remove();
+    };
+    const done = () => setOrder((o) => o && { ...o, copied: true });
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { fallback(); done(); });
+    } else {
+      fallback();
+      done();
+    }
+  };
+  const lineOrder = () => {
+    window.open("https://line.me/R/share?text=" + encodeURIComponent(buildOrderText()), "_blank");
+  };
+  const mailOrder = () => {
+    window.location.href =
+      "mailto:?subject=" + encodeURIComponent("発注: " + detail.name) +
+      "&body=" + encodeURIComponent(buildOrderText());
+  };
+
   // ---------- 原本ビューア ----------
   const openDocs = useCallback(async (inv) => {
     let docs = [];
@@ -1647,10 +1739,16 @@ ${window.location.href.split("#")[0]}
         return (
           <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
             <button onClick={goBack} className="text-sm text-green-800 hover:underline mb-4">← 検索結果に戻る</button>
-            <h1 className="text-2xl font-bold">
-              {detail.name}
-              <StaleBadge months={detail.staleMonths} />
-            </h1>
+            <div className="flex items-start justify-between gap-3">
+              <h1 className="text-2xl font-bold">
+                {detail.name}
+                <StaleBadge months={detail.staleMonths} />
+              </h1>
+              <button
+                onClick={openOrder}
+                className="shrink-0 mt-1 text-sm font-medium text-white bg-green-700 hover:bg-green-800 rounded-full px-5 py-2"
+              >📦 発注</button>
+            </div>
             <div className="text-sm text-gray-500 mt-1">
               {[detail.maker, detail.category, detail.spec].filter(Boolean).join(" ・ ")}
             </div>
@@ -1992,6 +2090,52 @@ ${window.location.href.split("#")[0]}
             )}
           </div>
 
+          {/* 納品先の登録 */}
+          <div className="mt-8">
+            <h2 className="font-medium">納品先の登録(倉庫・会社など)</h2>
+            <p className="text-xs text-gray-500 mt-1.5">
+              発注時に納品場所で「倉庫」を選ぶと、ここで登録した納品先から選択できます。
+            </p>
+            {sites.length > 0 && (
+              <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                {sites.map((s) => (
+                  <div key={s.id} className="flex items-center gap-4 px-4 py-3">
+                    <span className="text-lg">🏭</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{s.name}</div>
+                      <div className="text-xs text-gray-500 truncate">{s.address || "住所未登録"}</div>
+                    </div>
+                    <button
+                      onClick={() => { if (window.confirm(`納品先「${s.name}」を削除しますか?`)) removeSite(s.id); }}
+                      className="text-sm text-red-600 hover:bg-red-50 rounded px-2 py-1.5 shrink-0"
+                    >削除</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <input
+                value={siteName}
+                onChange={(e) => setSiteName(e.target.value)}
+                placeholder="名称(例: 本社倉庫)"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                style={{ width: 180 }}
+              />
+              <input
+                value={siteAddr}
+                onChange={(e) => setSiteAddr(e.target.value)}
+                placeholder="住所(例: 〇〇市〇〇町1-2-3)"
+                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                style={{ minWidth: 220 }}
+              />
+              <button
+                onClick={addSite}
+                disabled={!siteName.trim()}
+                className="text-sm text-white bg-green-700 hover:bg-green-800 rounded px-4 py-2 disabled:opacity-50"
+              >追加</button>
+            </div>
+          </div>
+
           {/* バックアップ */}
           <div className="mt-8 flex items-center gap-3 flex-wrap">
             <h2 className="font-medium">バックアップ</h2>
@@ -2110,6 +2254,108 @@ ${window.location.href.split("#")[0]}
             onClick={goBack}
             className="mt-10 text-sm text-gray-600 hover:bg-gray-50 border border-gray-200 rounded-full px-4 py-1.5"
           >← 戻る</button>
+        </div>
+      )}
+
+      {/* ================= 発注モーダル ================= */}
+      {order && detail && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setOrder(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-lg max-h-[88vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100">
+              <div className="font-bold">📦 発注 — {detail.name}</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {[detail.maker, detail.spec].filter(Boolean).join(" ・ ")}
+                {detail.latest.supplier && <> / 発注先: {detail.latest.supplier}</>}
+              </div>
+            </div>
+            <div className="p-5 space-y-4 text-sm">
+              <div>
+                <label className="text-xs text-gray-600">数量</label>
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    type="number" min="1"
+                    value={order.qty}
+                    onChange={(e) => setOrder({ ...order, qty: e.target.value, copied: false })}
+                    className="w-24 border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
+                  />
+                  <span className="text-gray-500">{detail.latest.unit || ""}</span>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">納品場所</label>
+                <div className="flex gap-4 mt-1">
+                  {["倉庫", "現場", "その他"].map((p) => (
+                    <label key={p} className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" checked={order.place === p} onChange={() => setOrder({ ...order, place: p, copied: false })} />
+                      {p}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {order.place === "倉庫" ? (
+                sites.length ? (
+                  <div>
+                    <label className="text-xs text-gray-600">納品先(登録済み)</label>
+                    <select
+                      value={order.siteId}
+                      onChange={(e) => setOrder({ ...order, siteId: e.target.value, copied: false })}
+                      className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 bg-white outline-none focus:border-green-600"
+                    >
+                      {sites.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}{s.address ? "(" + s.address + ")" : ""}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+                    納品先が未登録です。データ管理の「納品先の登録」から倉庫・会社の住所を登録すると、ここで選べるようになります。
+                  </div>
+                )
+              ) : (
+                <div>
+                  <label className="text-xs text-gray-600">{order.place === "現場" ? "現場の住所・名称" : "納品先の住所"}</label>
+                  <input
+                    value={order.address}
+                    onChange={(e) => setOrder({ ...order, address: e.target.value, copied: false })}
+                    placeholder="例: 〇〇市〇〇町1-2-3 〇〇様邸"
+                    className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-gray-600">依頼文(自動作成)</label>
+                <pre className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs whitespace-pre-wrap leading-relaxed" style={{ fontFamily: "inherit" }}>{buildOrderText()}</pre>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  onClick={copyOrder}
+                  disabled={!orderValid}
+                  className="text-sm text-white bg-green-700 hover:bg-green-800 rounded-full px-4 py-2 disabled:opacity-50"
+                >依頼文をコピー</button>
+                <button
+                  onClick={lineOrder}
+                  disabled={!orderValid}
+                  className="text-sm text-white rounded-full px-4 py-2 disabled:opacity-50"
+                  style={{ background: "#06C755" }}
+                >LINEで送る</button>
+                <button
+                  onClick={mailOrder}
+                  disabled={!orderValid}
+                  className="text-sm text-green-800 border border-green-300 hover:bg-green-50 rounded-full px-4 py-2 disabled:opacity-50"
+                >メールで送る</button>
+                <button
+                  onClick={() => setOrder(null)}
+                  className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded-full px-4 py-2"
+                >閉じる</button>
+              </div>
+              {order.copied && (
+                <div className="text-green-700 text-xs">✓ コピーしました。LINEやメールに貼り付けて送信できます。</div>
+              )}
+              <div className="text-xs text-gray-400 leading-relaxed">
+                「LINEで送る」はスマホでLINEアプリの共有画面が開きます(パソコンではコピーしてお使いください)。メールは宛先を入れてから送信してください。
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
