@@ -1871,6 +1871,10 @@ function ShizaiSearch() {
       return next;
     });
     if (!order.loggedId) setOrder((o) => o && { ...o, loggedId: id });
+    // カートからの発注は、送信した品目を自動でカートから外す
+    if (order.mode === "cart") {
+      saveCart(cart.filter((c) => !order.items.some((it) => it.key === c.key)));
+    }
     setOrderLogMsg(true);
     setTimeout(() => setOrderLogMsg(false), 2500);
   };
@@ -3214,23 +3218,15 @@ ${window.location.href.split("#")[0]}
                   disabled={!orderValid}
                   className="text-sm text-green-800 border border-green-300 hover:bg-green-50 rounded-full px-4 py-2 disabled:opacity-50"
                 >メールで送る</button>
-                {order.mode === "cart" && (
-                  <button
-                    onClick={() => {
-                      saveCart(cart.filter((c) => !order.items.some((it) => it.key === c.key)));
-                      setOrder(null);
-                    }}
-                    className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded-full px-4 py-2"
-                    title="発注し終えた品目をカートから外します"
-                  >発注済み(カートから外す)</button>
-                )}
                 <button
                   onClick={() => setOrder(null)}
                   className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded-full px-4 py-2"
                 >閉じる</button>
               </div>
               {orderLogMsg && (
-                <div className="text-green-700 text-xs">✓ 発注履歴に追加されました。</div>
+                <div className="text-green-700 text-xs">
+                  ✓ 発注履歴に追加されました。{order.mode === "cart" && "発注した品目はカートから外しました。"}
+                </div>
               )}
               {order.copied && (
                 <div className="text-green-700 text-xs">✓ コピーしました。LINEやメールに貼り付けて送信できます。</div>
