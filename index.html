@@ -2048,7 +2048,7 @@ ${window.location.href.split("#")[0]}
       {view === "home" && (
         <div className="flex flex-col items-center px-4 pb-24" style={{ paddingTop: "13vh" }}>
           <Logo size="large" onClick={goHome} />
-          <p className="mt-3 text-sm text-gray-500">
+          <p className="mt-3 text-sm text-gray-500 text-center px-4">
             構造材から設備材・仕上材まで — 建築資材全般の価格と購入履歴をまとめて検索
           </p>
 
@@ -3312,18 +3312,17 @@ ${window.location.href.split("#")[0]}
         </div>
       )}
 
-      {/* フッター */}
-      <div
-        className="fixed bottom-0 inset-x-0 flex items-center justify-center gap-4 text-xs text-gray-400 py-2 bg-white border-t border-gray-50"
-        style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))" }}
-      >
-        <span>問屋さん — 仕入価格はこのブラウザ内にのみ保存されます(端末を変える場合は下記バックアップを)</span>
-        {view === "home" && (
+      {/* フッター(トップのみ・仕入先向けリンク) */}
+      {view === "home" && (
+        <div
+          className="fixed bottom-0 inset-x-0 flex items-center justify-center text-xs py-2 bg-white border-t border-gray-50"
+          style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))" }}
+        >
           <button onClick={() => { setSupDone(null); go("supplier"); }} className="text-green-700 hover:underline">
             仕入先の方はこちら(料金表アップロード)
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
