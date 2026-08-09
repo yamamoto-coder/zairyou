@@ -1047,14 +1047,32 @@ function AddressInput({ value, onChange, history, onRemove, placeholder }) {
   );
 }
 
-function UploadStatus({ jobs, onRetry }) {
+function UploadStatus({ jobs, onRetry, onClear }) {
   if (!jobs.length) return null;
+  const active = jobs.filter((j) => j.status === "working" || j.status === "queued").length;
+  const done = jobs.filter((j) => j.status === "done" || j.status === "dup").length;
+  const errors = jobs.filter((j) => j.status === "error").length;
   return (
     <div className="w-full max-w-xl mt-6 space-y-2">
+      <div className="flex items-center gap-3 text-xs px-1">
+        {active > 0 ? (
+          <span className="text-green-700">
+            読み取り中… 残り {active} 件 — 待たずに次のファイルを追加できます
+          </span>
+        ) : (
+          <span className="text-gray-500">
+            読み取り完了{errors > 0 ? "(失敗 " + errors + " 件)" : ""}
+          </span>
+        )}
+        {active === 0 && done > 0 && onClear && (
+          <button onClick={onClear} className="ml-auto text-gray-400 hover:text-gray-600 underline shrink-0">完了分を消す</button>
+        )}
+      </div>
       {jobs.map((j) => (
         <div key={j.id} className="flex items-center gap-3 text-sm bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
           <span className="text-lg">📄</span>
           <span className="flex-1 truncate">{j.name}</span>
+          {j.status === "queued" && <span className="text-gray-400">順番待ち</span>}
           {j.status === "working" && <span className="text-green-700 animate-pulse">読取中…</span>}
           {j.status === "done" && (
             <span className="text-green-700">
@@ -1308,13 +1326,25 @@ function ShizaiSearch() {
   );
 
   // ---------- 請求書取込 ----------
+  // 待ち行列方式: 読み取り中でも次のファイルを追加でき、1つのループが順に処理する
+  // (並行処理すると保存の競合や同一請求書の統合漏れが起きるため直列)
+  const fileQueueRef = useRef([]);
+  const processingRef = useRef(false);
   const handleFiles = useCallback(async (fileList) => {
     const files = [...fileList].filter((f) => isPdfFile(f) || isImageFile(f));
     if (!files.length) return;
-    let current = (await sget(INVOICES_KEY)) || [];
     for (const f of files) {
-      const jobId = Date.now() + "-" + f.name;
-      setJobs((j) => [...j, { id: jobId, name: f.name, status: "working" }]);
+      const jobId = Date.now() + "-" + Math.random().toString(36).slice(2, 7) + "-" + f.name;
+      fileQueueRef.current.push({ jobId, f });
+      setJobs((j) => [...j, { id: jobId, name: f.name, status: "queued" }]);
+    }
+    if (processingRef.current) return; // 稼働中のループが追加分も順に処理する
+    processingRef.current = true;
+    let current = (await sget(INVOICES_KEY)) || [];
+    try {
+    while (fileQueueRef.current.length) {
+      const { jobId, f } = fileQueueRef.current.shift();
+      setJobs((j) => j.map((x) => (x.id === jobId ? { ...x, status: "working" } : x)));
       try {
         if (f.size > 40 * 1024 * 1024) {
           throw new Error("40MBを超えています。ファイルを分割してください");
@@ -1426,6 +1456,9 @@ function ShizaiSearch() {
         );
       }
     }
+    } finally {
+      processingRef.current = false;
+    }
     // 新しい資材の検索タグを裏で調査(失敗しても取込には影響しない)
     if (autoTagRef.current) autoTagRef.current(current);
   }, [engineCfg.engine, engineCfg.geminiKey, engineCfg.geminiModel]);
@@ -1440,6 +1473,9 @@ function ShizaiSearch() {
     },
     [handleFiles]
   );
+  const clearDoneJobs = useCallback(() => {
+    setJobs((j) => j.filter((x) => x.status === "working" || x.status === "queued" || x.status === "error"));
+  }, []);
 
   // ---------- 仕入先: 料金表アップロード(共有受信箱へ) ----------
   const handleSupplierFiles = useCallback(
@@ -1948,7 +1984,7 @@ ${window.location.href.split("#")[0]}
             </div>
           )}
 
-          <UploadStatus jobs={jobs} onRetry={retryJob} />
+          <UploadStatus jobs={jobs} onRetry={retryJob} onClear={clearDoneJobs} />
 
           {loaded && allItems.length > 0 && (
             <p className="mt-10 text-xs text-gray-400">
@@ -1995,7 +2031,7 @@ ${window.location.href.split("#")[0]}
       {/* ================= 検索結果 ================= */}
       {view === "results" && (
         <div className="px-4 md:px-8 py-5 pb-24" style={{ maxWidth: 780 }}>
-          <UploadStatus jobs={jobs.filter((j) => j.status === "working")} onRetry={retryJob} />
+          <UploadStatus jobs={jobs.filter((j) => j.status === "working" || j.status === "queued")} onRetry={retryJob} />
 
           {aiAnswer && (
             <div className="mb-6 border border-green-100 bg-green-50 rounded-xl p-4">
@@ -2707,7 +2743,7 @@ ${window.location.href.split("#")[0]}
 
           {/* 書類一覧 */}
           <h2 className="font-medium mt-8">取り込んだ書類</h2>
-          <UploadStatus jobs={jobs} onRetry={retryJob} />
+          <UploadStatus jobs={jobs} onRetry={retryJob} onClear={clearDoneJobs} />
           {invoices.length === 0 ? (
             <div className="text-sm text-gray-400 mt-3">まだ書類が登録されていません。</div>
           ) : (
