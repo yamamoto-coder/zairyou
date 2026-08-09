@@ -1,0 +1,10 @@
+# 設定ファイル(秘密情報入り)への直接アクセスを禁止
+<Files "config.php">
+  Require all denied
+</Files>
+<Files "config.sample.php">
+  Require all denied
+</Files>
+<Files "common.php">
+  Require all denied
+</Files>

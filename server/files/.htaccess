@@ -1,0 +1,3 @@
+# 原本ファイル置き場: Web からの直接閲覧を全面禁止。
+# 閲覧は必ず api/docs.php(ログイン確認あり)を経由する。
+Require all denied

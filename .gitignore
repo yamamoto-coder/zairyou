@@ -5,3 +5,6 @@
 secret*
 backup*.json
 問屋さんバックアップ*.json
+
+# サーバーの実設定(DBパスワード・AIキー入り)は絶対にコミットしない
+server/api/config.php
