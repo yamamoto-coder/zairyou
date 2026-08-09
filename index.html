@@ -2,9 +2,16 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>問屋さん — 建築資材検索</title>
 <meta name="robots" content="noindex" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#15803d" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="問屋さん" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" type="image/png" href="icon-192.png" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1052,7 +1059,7 @@ function AddressInput({ value, onChange, history, onRemove, placeholder }) {
         onBlur={close}
         onKeyDown={(e) => { if (e.key === "Escape") close(); }}
         placeholder={placeholder}
-        className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
+        className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
       />
       {open && shown.length > 0 && (
         <div
@@ -2146,7 +2153,7 @@ ${window.location.href.split("#")[0]}
 
       {/* ================= 検索結果 ================= */}
       {view === "results" && (
-        <div className="px-4 md:px-8 py-5 pb-24" style={{ maxWidth: 780 }}>
+        <div className="pl-4 pr-8 md:pl-8 md:pr-10 py-5 pb-24" style={{ maxWidth: 780 }}>
           <UploadStatus jobs={jobs.filter((j) => j.status === "working" || j.status === "queued")} onRetry={retryJob} />
 
           {aiAnswer && (
@@ -2596,7 +2603,7 @@ ${window.location.href.split("#")[0]}
               <select
                 value={ordersMonth}
                 onChange={(e) => setOrdersMonth(e.target.value)}
-                className="ml-auto text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white outline-none focus:border-green-600"
+                className="ml-auto text-base sm:text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white outline-none focus:border-green-600"
               >
                 <option value="">すべての期間</option>
                 {[...new Set(orderLog.map((e) => e.at.slice(0, 7)))].sort().reverse().map((m) => (
@@ -2688,7 +2695,7 @@ ${window.location.href.split("#")[0]}
                   value={anthropicKey}
                   onChange={(e) => setAnthropicKey(e.target.value)}
                   placeholder="sk-ant-..."
-                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                 />
                 <p className="text-xs text-gray-400 mt-1">キーはこのブラウザ内にのみ保存されます。</p>
               </div>
@@ -2703,7 +2710,7 @@ ${window.location.href.split("#")[0]}
                       value={geminiKey}
                       onChange={(e) => setGeminiKey(e.target.value)}
                       placeholder="AIza..."
-                      className="flex-1 px-3 py-2 text-sm outline-none bg-transparent rounded-lg"
+                      className="flex-1 px-3 py-2 text-base sm:text-sm outline-none bg-transparent rounded-lg"
                     />
                     <button
                       onClick={() => setShowKey(!showKey)}
@@ -2717,7 +2724,7 @@ ${window.location.href.split("#")[0]}
                   <input
                     value={geminiModel}
                     onChange={(e) => setGeminiModel(e.target.value)}
-                    className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                    className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                   />
                 </div>
                 <p className="text-xs text-gray-400 leading-relaxed">
@@ -2902,14 +2909,14 @@ ${window.location.href.split("#")[0]}
                 value={siteName}
                 onChange={(e) => setSiteName(e.target.value)}
                 placeholder="名称(例: 本社倉庫)"
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                className="border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                 style={{ width: 180 }}
               />
               <input
                 value={siteAddr}
                 onChange={(e) => setSiteAddr(e.target.value)}
                 placeholder="住所(例: 〇〇市〇〇町1-2-3)"
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                 style={{ minWidth: 220 }}
               />
               <button
@@ -2934,7 +2941,7 @@ ${window.location.href.split("#")[0]}
                   value={orderTpl.header}
                   onChange={(e) => setOrderTpl({ ...orderTpl, header: e.target.value })}
                   rows={3}
-                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                   style={{ resize: "vertical" }}
                 />
               </div>
@@ -2944,7 +2951,7 @@ ${window.location.href.split("#")[0]}
                   value={orderTpl.footer}
                   onChange={(e) => setOrderTpl({ ...orderTpl, footer: e.target.value })}
                   rows={3}
-                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                   style={{ resize: "vertical" }}
                 />
               </div>
@@ -3144,7 +3151,7 @@ ${window.location.href.split("#")[0]}
                       type="number" min="1"
                       value={order.items[0].qty}
                       onChange={(e) => setOrder({ ...order, items: [{ ...order.items[0], qty: e.target.value }], customText: null, copied: false })}
-                      className="w-24 border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
+                      className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm outline-none focus:border-green-600"
                     />
                     <span className="text-gray-500">{order.items[0].unit || ""}</span>
                   </div>
@@ -3180,7 +3187,7 @@ ${window.location.href.split("#")[0]}
                     <select
                       value={order.siteId}
                       onChange={(e) => setOrder({ ...order, siteId: e.target.value, customText: null, copied: false })}
-                      className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 bg-white outline-none focus:border-green-600"
+                      className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm bg-white outline-none focus:border-green-600"
                     >
                       {sites.map((s) => (
                         <option key={s.id} value={s.id}>{s.name}{s.address ? "(" + s.address + ")" : ""}</option>
@@ -3224,7 +3231,7 @@ ${window.location.href.split("#")[0]}
                   value={orderText}
                   onChange={(e) => setOrder({ ...order, customText: e.target.value, copied: false })}
                   rows={10}
-                  className="mt-1 w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs leading-relaxed outline-none focus:border-green-600 focus:bg-white"
+                  className="mt-1 w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-base sm:text-xs leading-relaxed outline-none focus:border-green-600 focus:bg-white"
                   style={{ fontFamily: "inherit", resize: "vertical" }}
                 />
                 {order.customText != null && (
@@ -3306,7 +3313,10 @@ ${window.location.href.split("#")[0]}
       )}
 
       {/* フッター */}
-      <div className="fixed bottom-0 inset-x-0 flex items-center justify-center gap-4 text-xs text-gray-400 py-2 bg-white border-t border-gray-50">
+      <div
+        className="fixed bottom-0 inset-x-0 flex items-center justify-center gap-4 text-xs text-gray-400 py-2 bg-white border-t border-gray-50"
+        style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))" }}
+      >
         <span>問屋さん — 仕入価格はこのブラウザ内にのみ保存されます(端末を変える場合は下記バックアップを)</span>
         {view === "home" && (
           <button onClick={() => { setSupDone(null); go("supplier"); }} className="text-green-700 hover:underline">

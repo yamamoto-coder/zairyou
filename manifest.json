@@ -1,0 +1,14 @@
+{
+  "name": "問屋さん — 建築資材検索",
+  "short_name": "問屋さん",
+  "description": "建築資材の価格と購入履歴を請求書から自動で読み取って検索できる社内ツール",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#15803d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }
+  ]
+}
