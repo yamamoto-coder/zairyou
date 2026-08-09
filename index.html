@@ -70,6 +70,11 @@ const TAGS_KEY = "shizai-ai-tags-v1"; // AI検索タグ(資材キー → タグ)
 const CART_KEY = "shizai-cart-v1"; // 発注カート
 const ADDR_KEY = "shizai-address-history-v1"; // 納品先住所の入力履歴
 const ADDR_MAX = 8;
+const ORDER_TPL_KEY = "shizai-order-template-v1"; // 発注依頼文の文面(前文・結び)
+const DEFAULT_ORDER_TPL = {
+  header: "いつもお世話になっております。\n下記のとおり発注いたします。",
+  footer: "納期のご連絡をお願いいたします。\n以上、よろしくお願いいたします。",
+};
 
 const TAX_RATE = 0.1;
 const STALE_MONTHS = 6; // これ以上前の購入は「価格が古い」扱い
@@ -1167,6 +1172,8 @@ function ShizaiSearch() {
   const [cart, setCart] = useState([]); // 発注カート
   const [cartMsg, setCartMsg] = useState(false); // カート追加の一言フィードバック
   const [addrHistory, setAddrHistory] = useState([]); // 納品先住所の入力履歴
+  const [orderTpl, setOrderTpl] = useState(DEFAULT_ORDER_TPL); // 依頼文の文面
+  const [tplMsg, setTplMsg] = useState("");
   const [aiTags, setAiTags] = useState({}); // AI検索タグ {groupKey: {tags, summary, at}}
   const [tagging, setTagging] = useState(false); // まとめて調査の進捗 {done, total, fail, current, finished}
   const [tagBusy, setTagBusy] = useState(false); // 詳細画面の単発調査中
@@ -1207,11 +1214,12 @@ function ShizaiSearch() {
   // ---------- 初期読込 ----------
   useEffect(() => {
     (async () => {
-      const [inv, pl, ib, st, hist, st2, tg, ct, ah] = await Promise.all([
-        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY),
+      const [inv, pl, ib, st, hist, st2, tg, ct, ah, tpl] = await Promise.all([
+        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY), sget(ORDER_TPL_KEY),
       ]);
       setCart(Array.isArray(ct) ? ct : []);
       setAddrHistory(Array.isArray(ah) ? ah : []);
+      if (tpl && typeof tpl.header === "string" && typeof tpl.footer === "string") setOrderTpl(tpl);
       setInvoices(inv || []);
       setPricelists(pl || []);
       setInbox(ib || []);
@@ -1798,18 +1806,18 @@ function ShizaiSearch() {
     const lines = [
       supplier ? supplier + " 御中" : null,
       supplier ? "" : null,
-      "いつもお世話になっております。",
-      "下記のとおり発注いたします。",
+      ...(orderTpl.header ? orderTpl.header.split("\n") : []),
       "",
       ...itemLines,
       "■納品場所: " + placeLabel,
       addr ? "■納品先住所: " + addr : null,
       "",
-      "納期のご連絡をお願いいたします。",
-      "以上、よろしくお願いいたします。",
+      ...(orderTpl.footer ? orderTpl.footer.split("\n") : []),
     ];
     return lines.filter((l) => l !== null).join("\n");
   };
+  // 手で編集された文面があればそれを優先する
+  const orderText = order ? (order.customText != null ? order.customText : buildOrderText()) : "";
   const orderValid =
     order &&
     order.items.length > 0 &&
@@ -1835,7 +1843,7 @@ function ShizaiSearch() {
   };
   const copyOrder = () => {
     recordOrderAddress();
-    const text = buildOrderText();
+    const text = orderText;
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -1856,7 +1864,7 @@ function ShizaiSearch() {
   };
   const lineOrder = () => {
     recordOrderAddress();
-    window.open("https://line.me/R/share?text=" + encodeURIComponent(buildOrderText()), "_blank");
+    window.open("https://line.me/R/share?text=" + encodeURIComponent(orderText), "_blank");
   };
   const mailOrder = () => {
     recordOrderAddress();
@@ -1866,7 +1874,7 @@ function ShizaiSearch() {
         : "発注: " + (order && order.items[0] ? order.items[0].name : "");
     window.location.href =
       "mailto:?subject=" + encodeURIComponent(subject) +
-      "&body=" + encodeURIComponent(buildOrderText());
+      "&body=" + encodeURIComponent(orderText);
   };
 
   // ---------- 原本ビューア ----------
@@ -2759,6 +2767,57 @@ ${window.location.href.split("#")[0]}
             </div>
           </div>
 
+          {/* 発注依頼文の文面 */}
+          <div className="mt-8">
+            <h2 className="font-medium">発注依頼文の文面</h2>
+            <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+              発注画面で自動作成される依頼文の「前文」と「結び」を、自社の言い回しに変更できます。
+              宛名(◯◯ 御中)と品名・数量・納品場所は、この2つの間に自動で入ります。
+            </p>
+            <div className="mt-3 space-y-3" style={{ maxWidth: 560 }}>
+              <div>
+                <label className="text-xs text-gray-600">前文(宛名の後に入ります)</label>
+                <textarea
+                  value={orderTpl.header}
+                  onChange={(e) => setOrderTpl({ ...orderTpl, header: e.target.value })}
+                  rows={3}
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  style={{ resize: "vertical" }}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">結び(品名・納品場所の後に入ります)</label>
+                <textarea
+                  value={orderTpl.footer}
+                  onChange={(e) => setOrderTpl({ ...orderTpl, footer: e.target.value })}
+                  rows={3}
+                  className="mt-0.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                  style={{ resize: "vertical" }}
+                />
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={() => {
+                    sset(ORDER_TPL_KEY, orderTpl).catch(() => {});
+                    setTplMsg("保存しました");
+                    setTimeout(() => setTplMsg(""), 2000);
+                  }}
+                  className="text-sm text-white bg-green-700 hover:bg-green-800 rounded px-4 py-1.5"
+                >保存</button>
+                <button
+                  onClick={() => {
+                    setOrderTpl(DEFAULT_ORDER_TPL);
+                    sset(ORDER_TPL_KEY, DEFAULT_ORDER_TPL).catch(() => {});
+                    setTplMsg("初期の文面に戻しました");
+                    setTimeout(() => setTplMsg(""), 2000);
+                  }}
+                  className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-4 py-1.5"
+                >初期の文面に戻す</button>
+                {tplMsg && <span className="text-sm text-green-700">✓ {tplMsg}</span>}
+              </div>
+            </div>
+          </div>
+
           {/* AI検索タグ */}
           <div className="mt-8">
             <h2 className="font-medium">AI検索タグ</h2>
@@ -2931,7 +2990,7 @@ ${window.location.href.split("#")[0]}
                     <input
                       type="number" min="1"
                       value={order.items[0].qty}
-                      onChange={(e) => setOrder({ ...order, items: [{ ...order.items[0], qty: e.target.value }], copied: false })}
+                      onChange={(e) => setOrder({ ...order, items: [{ ...order.items[0], qty: e.target.value }], customText: null, copied: false })}
                       className="w-24 border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
                     />
                     <span className="text-gray-500">{order.items[0].unit || ""}</span>
@@ -2955,7 +3014,7 @@ ${window.location.href.split("#")[0]}
                 <div className="flex gap-4 mt-1">
                   {["倉庫", "現場", "その他"].map((p) => (
                     <label key={p} className="flex items-center gap-1.5 cursor-pointer">
-                      <input type="radio" checked={order.place === p} onChange={() => setOrder({ ...order, place: p, copied: false })} />
+                      <input type="radio" checked={order.place === p} onChange={() => setOrder({ ...order, place: p, customText: null, copied: false })} />
                       {p}
                     </label>
                   ))}
@@ -2967,7 +3026,7 @@ ${window.location.href.split("#")[0]}
                     <label className="text-xs text-gray-600">納品先(登録済み)</label>
                     <select
                       value={order.siteId}
-                      onChange={(e) => setOrder({ ...order, siteId: e.target.value, copied: false })}
+                      onChange={(e) => setOrder({ ...order, siteId: e.target.value, customText: null, copied: false })}
                       className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 bg-white outline-none focus:border-green-600"
                     >
                       {sites.map((s) => (
@@ -2988,7 +3047,7 @@ ${window.location.href.split("#")[0]}
                   </label>
                   <AddressInput
                     value={order.address}
-                    onChange={(v) => setOrder({ ...order, address: v, copied: false })}
+                    onChange={(v) => setOrder({ ...order, address: v, customText: null, copied: false })}
                     history={addrHistory}
                     onRemove={removeAddr}
                     placeholder="例: 〇〇市〇〇町1-2-3 〇〇様邸"
@@ -2996,8 +3055,30 @@ ${window.location.href.split("#")[0]}
                 </div>
               )}
               <div>
-                <label className="text-xs text-gray-600">依頼文(自動作成)</label>
-                <pre className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs whitespace-pre-wrap leading-relaxed" style={{ fontFamily: "inherit" }}>{buildOrderText()}</pre>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-600 flex-1">
+                    依頼文(そのまま編集できます)
+                  </label>
+                  {order.customText != null && (
+                    <button
+                      onClick={() => setOrder({ ...order, customText: null, copied: false })}
+                      className="text-xs text-gray-500 border border-gray-200 hover:bg-gray-50 rounded-full px-2.5 py-0.5"
+                      title="手で直した内容を破棄して自動作成し直します"
+                    >自動作成に戻す</button>
+                  )}
+                </div>
+                <textarea
+                  value={orderText}
+                  onChange={(e) => setOrder({ ...order, customText: e.target.value, copied: false })}
+                  rows={10}
+                  className="mt-1 w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs leading-relaxed outline-none focus:border-green-600 focus:bg-white"
+                  style={{ fontFamily: "inherit", resize: "vertical" }}
+                />
+                {order.customText != null && (
+                  <div className="text-xs text-amber-700 mt-1">
+                    手で編集した文面を送ります。数量や納品場所を変えると自動作成に戻ります。
+                  </div>
+                )}
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
                 <button
