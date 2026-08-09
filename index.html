@@ -70,6 +70,7 @@ const TAGS_KEY = "shizai-ai-tags-v1"; // AI検索タグ(資材キー → タグ)
 const CART_KEY = "shizai-cart-v1"; // 発注カート
 const ADDR_KEY = "shizai-address-history-v1"; // 納品先住所の入力履歴
 const ADDR_MAX = 8;
+const ORDERS_KEY = "shizai-order-history-v1"; // 発注履歴
 const ORDER_TPL_KEY = "shizai-order-template-v1"; // 発注依頼文の文面(前文・結び)
 const DEFAULT_ORDER_TPL = {
   header: "いつもお世話になっております。\n下記のとおり発注いたします。",
@@ -1174,6 +1175,10 @@ function ShizaiSearch() {
   const [addrHistory, setAddrHistory] = useState([]); // 納品先住所の入力履歴
   const [orderTpl, setOrderTpl] = useState(DEFAULT_ORDER_TPL); // 依頼文の文面
   const [tplMsg, setTplMsg] = useState("");
+  const [orderLog, setOrderLog] = useState([]); // 発注履歴
+  const [orderLogMsg, setOrderLogMsg] = useState(false); // 「履歴に追加」の表示
+  const [ordersMonth, setOrdersMonth] = useState(""); // 発注履歴の年月フィルター("" = すべて)
+  const [logCopiedId, setLogCopiedId] = useState(null); // 履歴からの再コピー表示
   const [aiTags, setAiTags] = useState({}); // AI検索タグ {groupKey: {tags, summary, at}}
   const [tagging, setTagging] = useState(false); // まとめて調査の進捗 {done, total, fail, current, finished}
   const [tagBusy, setTagBusy] = useState(false); // 詳細画面の単発調査中
@@ -1214,12 +1219,13 @@ function ShizaiSearch() {
   // ---------- 初期読込 ----------
   useEffect(() => {
     (async () => {
-      const [inv, pl, ib, st, hist, st2, tg, ct, ah, tpl] = await Promise.all([
-        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY), sget(ORDER_TPL_KEY),
+      const [inv, pl, ib, st, hist, st2, tg, ct, ah, tpl, olog] = await Promise.all([
+        sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY), sget(ORDER_TPL_KEY), sget(ORDERS_KEY),
       ]);
       setCart(Array.isArray(ct) ? ct : []);
       setAddrHistory(Array.isArray(ah) ? ah : []);
       if (tpl && typeof tpl.header === "string" && typeof tpl.footer === "string") setOrderTpl(tpl);
+      setOrderLog(Array.isArray(olog) ? olog : []);
       setInvoices(inv || []);
       setPricelists(pl || []);
       setInbox(ib || []);
@@ -1841,8 +1847,43 @@ function ShizaiSearch() {
       return next;
     });
   };
+  // コピー/LINE/メールを実行した時点で発注履歴に記録する。
+  // 同じ発注画面内で複数回押した場合は1件にまとめ、送信手段と文面を更新する。
+  const recordOrderHistory = (method) => {
+    if (!order) return;
+    const id = order.loggedId || Date.now() + "-o";
+    const entry = {
+      id,
+      at: new Date().toISOString(),
+      supplier: order.supplier || "",
+      items: order.items.map((it) => ({ name: it.name, spec: it.spec, maker: it.maker, unit: it.unit, qty: it.qty })),
+      place: order.place,
+      address:
+        order.place === "倉庫"
+          ? (() => { const s = sites.find((x) => x.id === order.siteId); return s ? s.name + (s.address ? "(" + s.address + ")" : "") : "倉庫"; })()
+          : order.address.trim(),
+      method,
+      text: orderText,
+    };
+    setOrderLog((prev) => {
+      const next = [entry, ...prev.filter((e) => e.id !== id)].slice(0, 200);
+      sset(ORDERS_KEY, next).catch(() => {});
+      return next;
+    });
+    if (!order.loggedId) setOrder((o) => o && { ...o, loggedId: id });
+    setOrderLogMsg(true);
+    setTimeout(() => setOrderLogMsg(false), 2500);
+  };
+  const removeOrderLog = (id) => {
+    setOrderLog((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      sset(ORDERS_KEY, next).catch(() => {});
+      return next;
+    });
+  };
   const copyOrder = () => {
     recordOrderAddress();
+    recordOrderHistory("コピー");
     const text = orderText;
     const fallback = () => {
       const ta = document.createElement("textarea");
@@ -1864,10 +1905,12 @@ function ShizaiSearch() {
   };
   const lineOrder = () => {
     recordOrderAddress();
+    recordOrderHistory("LINE");
     window.open("https://line.me/R/share?text=" + encodeURIComponent(orderText), "_blank");
   };
   const mailOrder = () => {
     recordOrderAddress();
+    recordOrderHistory("メール");
     const subject =
       order && order.mode === "cart"
         ? "発注: " + order.items.length + "品目(" + (order.supplier || "") + ")"
@@ -2050,6 +2093,9 @@ ${window.location.href.split("#")[0]}
               {cartCount > 0 && (
                 <span className="absolute -top-1 -right-1 text-xs bg-green-700 text-white rounded-full px-1.5">{cartCount}</span>
               )}
+            </button>
+            <button onClick={() => go("orders")} className="text-sm text-gray-600 hover:bg-gray-50 rounded-full px-3 py-1.5 shrink-0">
+              発注履歴
             </button>
             <button onClick={() => fileRef.current?.click()} className="text-sm text-green-800 hover:bg-green-50 rounded-full px-3 py-1.5 shrink-0">📄 取込</button>
             <button onClick={() => go("manage")} className="text-sm text-gray-600 hover:bg-gray-50 rounded-full px-3 py-1.5 shrink-0 relative">
@@ -2502,6 +2548,77 @@ ${window.location.href.split("#")[0]}
               );
             })()
           )}
+        </div>
+      )}
+
+      {/* ================= 発注履歴 ================= */}
+      {view === "orders" && (
+        <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-xl font-bold">発注履歴</h1>
+            {orderLog.length > 0 && (
+              <select
+                value={ordersMonth}
+                onChange={(e) => setOrdersMonth(e.target.value)}
+                className="ml-auto text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white outline-none focus:border-green-600"
+              >
+                <option value="">すべての期間</option>
+                {[...new Set(orderLog.map((e) => e.at.slice(0, 7)))].sort().reverse().map((m) => (
+                  <option key={m} value={m}>{m.slice(0, 4)}年{Number(m.slice(5, 7))}月</option>
+                ))}
+              </select>
+            )}
+          </div>
+          {(() => {
+            if (!orderLog.length) {
+              return (
+                <div className="mt-10 text-center text-sm text-gray-400 leading-relaxed">
+                  まだ発注履歴がありません。<br />
+                  発注画面で「依頼文をコピー」「LINEで送る」「メールで送る」を実行すると、ここに記録されます。
+                </div>
+              );
+            }
+            const list = orderLog.filter((e) => !ordersMonth || e.at.slice(0, 7) === ordersMonth);
+            if (!list.length) {
+              return <div className="mt-8 text-sm text-gray-400">この月の発注履歴はありません。</div>;
+            }
+            return (
+              <div className="mt-4 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                {list.map((e) => (
+                  <div key={e.id} className="px-4 py-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-gray-500 shrink-0">{fmtDate(e.at.slice(0, 10))} {e.at.slice(11, 16)}</span>
+                      <span className="text-sm font-medium truncate">{e.supplier || "仕入先不明"}</span>
+                      <span className="text-xs text-green-800 bg-green-50 border border-green-100 rounded-full px-2 py-0.5 shrink-0">{e.method}</span>
+                      <span className="text-xs text-gray-500 truncate">{e.place}{e.address ? ": " + e.address : ""}</span>
+                      <span className="ml-auto flex gap-1.5 shrink-0">
+                        <button
+                          onClick={() => {
+                            navigator.clipboard && navigator.clipboard.writeText(e.text).catch(() => {});
+                            setLogCopiedId(e.id);
+                            setTimeout(() => setLogCopiedId(null), 2000);
+                          }}
+                          className="text-xs text-green-800 border border-green-200 hover:bg-green-50 rounded-full px-2.5 py-1"
+                        >{logCopiedId === e.id ? "✓ コピーしました" : "依頼文をコピー"}</button>
+                        <button
+                          onClick={() => { if (window.confirm("この発注履歴を削除しますか?")) removeOrderLog(e.id); }}
+                          className="text-xs text-red-500 hover:bg-red-50 rounded-full px-2 py-1"
+                        >削除</button>
+                      </span>
+                    </div>
+                    <div className="mt-1.5 text-sm text-gray-700">
+                      {e.items.map((it, i) => (
+                        <span key={i}>
+                          {i > 0 && <span className="text-gray-300"> / </span>}
+                          {it.name}{it.spec ? " " + it.spec : ""} × {it.qty}{it.unit || ""}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -3112,6 +3229,9 @@ ${window.location.href.split("#")[0]}
                   className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded-full px-4 py-2"
                 >閉じる</button>
               </div>
+              {orderLogMsg && (
+                <div className="text-green-700 text-xs">✓ 発注履歴に追加されました。</div>
+              )}
               {order.copied && (
                 <div className="text-green-700 text-xs">✓ コピーしました。LINEやメールに貼り付けて送信できます。</div>
               )}
