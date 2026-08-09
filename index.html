@@ -988,6 +988,55 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
   );
 }
 
+// 納品先住所の入力欄。フォーカスすると過去に使った住所がドロップダウンで出る
+function AddressInput({ value, onChange, history, onRemove, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const shown = useMemo(() => {
+    const list = history || [];
+    const v = norm((value || "").trim());
+    return (v ? list.filter((h) => norm(h).includes(v) && h !== value) : list).slice(0, 5);
+  }, [history, value]);
+  const close = () => setOpen(false);
+  return (
+    <div className="relative">
+      <input
+        value={value}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={close}
+        onKeyDown={(e) => { if (e.key === "Escape") close(); }}
+        placeholder={placeholder}
+        className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
+      />
+      {open && shown.length > 0 && (
+        <div
+          className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-md py-1.5 z-30 overflow-hidden"
+          onMouseDown={(e) => e.preventDefault() /* クリックで input の blur を起こさない */}
+        >
+          {shown.map((h) => (
+            <div
+              key={h}
+              onClick={() => { onChange(h); close(); }}
+              className="flex items-center gap-2.5 px-3 py-2 cursor-pointer text-sm hover:bg-gray-50"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" className="text-gray-400 shrink-0">
+                <path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7 6.95 6.95 0 0 1-4.9-2.03l-1.42 1.42A8.95 8.95 0 0 0 13 21a9 9 0 0 0 0-18m-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8z" />
+              </svg>
+              <span className="flex-1 truncate text-gray-700">{h}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRemove && onRemove(h); }}
+                className="text-gray-300 hover:text-gray-600 px-1"
+                aria-label="この履歴を削除"
+                title="履歴から削除"
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UploadStatus({ jobs, onRetry }) {
   if (!jobs.length) return null;
   return (
@@ -2808,37 +2857,17 @@ ${window.location.href.split("#")[0]}
                 )
               ) : (
                 <div>
-                  <label className="text-xs text-gray-600">{order.place === "現場" ? "現場の住所・名称" : "納品先の住所"}</label>
-                  <input
+                  <label className="text-xs text-gray-600">
+                    {order.place === "現場" ? "現場の住所・名称" : "納品先の住所"}
+                    {addrHistory.length > 0 && <span className="text-gray-400 ml-1.5">(クリックで履歴から選べます)</span>}
+                  </label>
+                  <AddressInput
                     value={order.address}
-                    onChange={(e) => setOrder({ ...order, address: e.target.value, copied: false })}
+                    onChange={(v) => setOrder({ ...order, address: v, copied: false })}
+                    history={addrHistory}
+                    onRemove={removeAddr}
                     placeholder="例: 〇〇市〇〇町1-2-3 〇〇様邸"
-                    className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-green-600"
                   />
-                  {addrHistory.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-                      <span className="text-gray-400">履歴:</span>
-                      {addrHistory.map((a) => (
-                        <span
-                          key={a}
-                          onClick={() => setOrder({ ...order, address: a, copied: false })}
-                          className={
-                            "flex items-center gap-0.5 border rounded-full pl-2.5 pr-1 py-0.5 cursor-pointer " +
-                            (order.address === a
-                              ? "border-green-400 bg-green-50 text-green-800"
-                              : "border-gray-200 text-gray-600 hover:border-green-300 hover:bg-green-50")
-                          }
-                        >
-                          <span className="truncate" style={{ maxWidth: 220 }}>{a}</span>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); removeAddr(a); }}
-                            className="text-gray-300 hover:text-gray-600 px-1"
-                            aria-label="この履歴を削除"
-                          >×</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
               <div>
