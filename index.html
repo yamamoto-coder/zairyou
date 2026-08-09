@@ -1891,7 +1891,7 @@ ${window.location.href.split("#")[0]}
               );
             })()}
               </div>
-              {tg && tg.image && (
+              {tg && tg.image ? (
                 <a
                   href={tg.image_source || tg.image}
                   target="_blank"
@@ -1905,6 +1905,17 @@ ${window.location.href.split("#")[0]}
                     className="w-24 h-24 md:w-28 md:h-28 object-contain border border-gray-200 rounded-xl bg-white"
                     onError={(e) => { const a = e.target.closest("a"); if (a) a.style.display = "none"; }}
                   />
+                </a>
+              ) : (
+                <a
+                  href={"https://www.google.com/search?tbm=isch&q=" + encodeURIComponent(detail.name + " " + (detail.maker || ""))}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 w-24 h-24 md:w-28 md:h-28 border border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-center text-xs text-gray-400 hover:border-green-400 hover:bg-green-50 px-1"
+                  title="Googleで商品画像を検索します"
+                >
+                  <span>商品画像なし</span>
+                  <span className="text-green-800 underline mt-1">Webで画像を探す</span>
                 </a>
               )}
             </div>
