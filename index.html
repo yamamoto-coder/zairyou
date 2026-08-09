@@ -656,10 +656,41 @@ async function predictPrice(group, cfg) {
 // ---------- AI: 検索タグの調査 ----------
 // 商品をWebで調べ、商品名に含まれない成分・種別・用途のキーワードを作る。
 // これを検索対象に加えることで「シリコン」でオーデフレッシュSI等がヒットする。
-async function fetchMaterialTags(group, cfg) {
-  const prompt = `建築資材の社内検索システム用のキーワードを作ります。次の商品をWeb検索で徹底的に調べ、正確な情報に基づいて回答してください。
 
-商品名: ${group.name}
+// 回答文の中から「tags 配列を持つJSON」を括弧の対応を数えて取り出す。
+// Web検索付きの回答は前後に文章や出典が付くことが多く、単純な
+// 「最初の{〜最後の}」では壊れたJSONを掴んで失敗するため。
+function extractTagJson(text) {
+  const s = (text || "").replace(/```json|```/g, "");
+  const spans = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { if (depth > 0) inStr = true; continue; }
+    if (ch === "{") { if (depth === 0) start = i; depth++; }
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) { spans.push(s.slice(start, i + 1)); start = -1; }
+      if (depth < 0) depth = 0;
+    }
+  }
+  for (let i = spans.length - 1; i >= 0; i--) {
+    try {
+      const o = JSON.parse(spans[i]);
+      if (o && Array.isArray(o.tags)) return o;
+    } catch {}
+  }
+  return null;
+}
+
+function tagPromptBody(group) {
+  return `商品名: ${group.name}
 メーカー: ${group.maker || "不明"}
 規格: ${group.spec || "不明"}
 分類: ${group.category || "不明"}
@@ -667,33 +698,59 @@ async function fetchMaterialTags(group, cfg) {
 この商品の「成分・樹脂種別・水性/油性・用途・部位・一般名称・同義語・略称」を表す検索キーワードを日本語で10〜20個挙げてください。
 目的: 商品名に含まれない語でも検索でヒットさせるためです(例: 商品名に「シリコン」が無い水性シリコン塗料を「シリコン」で見つける)。
 
-あわせて、メーカー公式サイトや商品ページに掲載されている商品画像と、
-電子カタログ・技術資料(カタログPDF、仕様書・技術データシート、色見本、施工要領書、SDS など)も探してください。
-
 回答の最後に次のJSONだけを1つ出力してください:
 {
   "tags": ["キーワード1", "キーワード2", ...],
   "summary": "商品の一言説明(30字以内)",
-  "image_url": "商品画像の直リンクURL(https で始まり .jpg/.png/.webp 等で終わる実在のURL)。検索結果で実際に確認できたものだけ。無ければ null",
+  "image_url": "商品画像の直リンクURL(https で始まり .jpg/.png/.webp 等で終わる実在のURL)。確認できたものだけ。無ければ null",
   "image_source": "その画像が載っている商品ページのURL。無ければ null",
   "catalogs": [{ "title": "資料名(8字以内。例: カタログ, 色見本, 仕様書, 施工要領)", "url": "https で始まる実在のURL(PDF直リンクか資料ページ)" }]
 }
 
-catalogs は重要な順に最大3件。画像URL・資料URLは推測で作らず、Web検索で実際に確認できたものだけを出してください。無ければ catalogs は [] にしてください。
-Webで確証が得られない場合も、商品名・メーカー・分類から推定できる一般的な種別キーワードを挙げ、summary の末尾に(推定)と付けてください。`;
-  let text;
-  if (cfg && cfg.geminiKey) {
-    text = await callGemini(cfg, [{ text: prompt }], { search: true });
-  } else {
-    text = await callClaude({
-      messages: [{ role: "user", content: prompt }],
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-    });
+catalogs は重要な順に最大3件。無ければ [] にしてください。
+確証が得られない場合も、商品名・メーカー・分類から推定できる一般的な種別キーワードを tags に挙げ、summary の末尾に(推定)と付けてください。`;
+}
+
+async function fetchMaterialTags(group, cfg) {
+  const webPrompt = `建築資材の社内検索システム用のキーワードを作ります。次の商品をWeb検索で徹底的に調べ、正確な情報に基づいて回答してください。
+あわせて、メーカー公式サイトや商品ページに掲載されている商品画像と、電子カタログ・技術資料(カタログPDF、仕様書、色見本、施工要領書、SDS など)も探してください。
+画像URL・資料URLは推測で作らず、Web検索で実際に確認できたものだけを出してください。
+
+${tagPromptBody(group)}`;
+  const litePrompt = `建築資材の社内検索システム用のキーワードを作ります。次の商品について、あなたの知識の範囲で回答してください(Web検索は不要)。
+image_url と image_source は null、catalogs は確実に知っている公式資料が無ければ [] にしてください。URLの推測は禁止です。
+
+${tagPromptBody(group)}`;
+  const hasGemini = !!(cfg && cfg.geminiKey);
+  const hasClaude = !!(getSavedSettings().anthropicKey || "").trim();
+  // Web検索付きを優先し、失敗したらエンジン切替 → 検索なしの順で粘る
+  const attempts = [];
+  if (hasGemini) attempts.push(() => callGemini(cfg, [{ text: webPrompt }], { search: true }));
+  if (hasClaude) attempts.push(() =>
+    callClaude({ messages: [{ role: "user", content: webPrompt }], tools: [{ type: "web_search_20250305", name: "web_search" }] })
+  );
+  if (hasGemini) attempts.push(() => callGemini(cfg, [{ text: litePrompt }]));
+  if (hasClaude) attempts.push(() => callClaude({ messages: [{ role: "user", content: litePrompt }] }));
+  if (!attempts.length) {
+    throw new Error("AIが未設定です。管理者にご連絡ください");
   }
-  const parsed = parseJson(text);
+  let lastErr = null;
+  let parsed = null;
+  for (const run of attempts) {
+    try {
+      const text = await run();
+      parsed = extractTagJson(text);
+      if (parsed && parsed.tags.length) break;
+      parsed = null;
+      lastErr = new Error("AIの回答からタグを読み取れませんでした");
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!parsed) throw lastErr || new Error("AI調査に失敗しました");
   const httpsUrl = (v) => (typeof v === "string" && /^https:\/\/\S+$/.test(v.trim()) ? v.trim() : "");
   return {
-    tags: (parsed.tags || []).map((t) => String(t).trim()).filter(Boolean).slice(0, 25),
+    tags: parsed.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 25),
     summary: parsed.summary || "",
     image: httpsUrl(parsed.image_url),
     image_source: httpsUrl(parsed.image_source),
