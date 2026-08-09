@@ -2030,12 +2030,15 @@ ${window.location.href.split("#")[0]}
                 <span className="ml-1.5 text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5">{pendingCount}</span>
               )}
             </button>
-            {cartCount > 0 && (
-              <button onClick={() => go("cart")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
-                発注カート
+            <button onClick={() => go("cart")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
+              カート
+              {cartCount > 0 && (
                 <span className="ml-1.5 text-xs bg-green-700 text-white rounded-full px-1.5 py-0.5">{cartCount}</span>
-              </button>
-            )}
+              )}
+            </button>
+            <button onClick={() => go("orders")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
+              発注履歴
+            </button>
           </div>
 
           {loaded && categories.length > 0 && (
