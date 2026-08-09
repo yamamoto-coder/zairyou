@@ -978,7 +978,7 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
             }
           }}
           placeholder="材料名・メーカー・性質で検索(例: 桧 KD材 / VVF 2.0 / 水性 遮熱)"
-          className="flex-1 min-w-0 outline-none px-3 text-base bg-transparent"
+          className="flex-1 w-0 min-w-0 lg:min-w-[10rem] outline-none px-3 text-base bg-transparent"
         />
         {value && (
           <button onClick={() => onChange("")} className="text-gray-400 hover:text-gray-600 px-1 sm:px-2 text-lg" aria-label="クリア">×</button>
@@ -2087,7 +2087,7 @@ ${window.location.href.split("#")[0]}
           >← 戻る</button>
           <Logo size="small" onClick={goHome} />
           {view !== "manage" && (
-            <div className="order-last w-full sm:order-none sm:w-auto sm:flex-1 min-w-0 sm:max-w-xl">
+            <div className="order-last w-full lg:order-none lg:w-auto lg:flex-1 min-w-0 lg:max-w-xl">
               <SearchBar compact value={query} onChange={setQuery} onSubmit={() => runSearch()} onAI={runAI}
                 history={history} onPick={(h) => { setQuery(h); runSearch(h); }} onRemove={removeHistory}
                 taxMode={taxMode} onTax={changeTax} />
