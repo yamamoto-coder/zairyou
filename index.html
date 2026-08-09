@@ -667,9 +667,17 @@ async function fetchMaterialTags(group, cfg) {
 この商品の「成分・樹脂種別・水性/油性・用途・部位・一般名称・同義語・略称」を表す検索キーワードを日本語で10〜20個挙げてください。
 目的: 商品名に含まれない語でも検索でヒットさせるためです(例: 商品名に「シリコン」が無い水性シリコン塗料を「シリコン」で見つける)。
 
-回答の最後に次のJSONだけを1つ出力してください:
-{ "tags": ["キーワード1", "キーワード2", ...], "summary": "商品の一言説明(30字以内)" }
+あわせて、メーカー公式サイトや商品ページに掲載されている商品画像も探してください。
 
+回答の最後に次のJSONだけを1つ出力してください:
+{
+  "tags": ["キーワード1", "キーワード2", ...],
+  "summary": "商品の一言説明(30字以内)",
+  "image_url": "商品画像の直リンクURL(https で始まり .jpg/.png/.webp 等で終わる実在のURL)。検索結果で実際に確認できたものだけ。無ければ null",
+  "image_source": "その画像が載っている商品ページのURL。無ければ null"
+}
+
+画像URLは推測で作らず、Web検索で実際に確認できたものだけを出してください。
 Webで確証が得られない場合も、商品名・メーカー・分類から推定できる一般的な種別キーワードを挙げ、summary の末尾に(推定)と付けてください。`;
   let text;
   if (cfg && cfg.geminiKey) {
@@ -681,9 +689,12 @@ Webで確証が得られない場合も、商品名・メーカー・分類か�
     });
   }
   const parsed = parseJson(text);
+  const httpsUrl = (v) => (typeof v === "string" && /^https:\/\/\S+$/.test(v.trim()) ? v.trim() : "");
   return {
     tags: (parsed.tags || []).map((t) => String(t).trim()).filter(Boolean).slice(0, 25),
     summary: parsed.summary || "",
+    image: httpsUrl(parsed.image_url),
+    image_source: httpsUrl(parsed.image_source),
   };
 }
 
@@ -1843,9 +1854,12 @@ ${window.location.href.split("#")[0]}
         const pred = predictions[detail.key];
         const busy = predicting[detail.key];
         const stale = detail.staleMonths != null && detail.staleMonths >= STALE_MONTHS;
+        const tg = aiTags[detail.key];
         return (
           <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
             <button onClick={goBack} className="text-sm text-green-800 hover:underline mb-4">← 検索結果に戻る</button>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold">
               {detail.name}
               <StaleBadge months={detail.staleMonths} />
@@ -1855,7 +1869,6 @@ ${window.location.href.split("#")[0]}
             </div>
             {detail.notes && <div className="text-sm text-gray-600 mt-1">{detail.notes}</div>}
             {(() => {
-              const tg = aiTags[detail.key];
               return tg && tg.tags && tg.tags.length ? (
                 <div className="text-xs text-gray-500 mt-2 leading-relaxed">
                   <span className="text-gray-400">AI検索タグ: </span>
@@ -1877,6 +1890,24 @@ ${window.location.href.split("#")[0]}
                 </div>
               );
             })()}
+              </div>
+              {tg && tg.image && (
+                <a
+                  href={tg.image_source || tg.image}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0"
+                  title={tg.summary || "商品ページを開く"}
+                >
+                  <img
+                    src={tg.image}
+                    alt={detail.name}
+                    className="w-24 h-24 md:w-28 md:h-28 object-contain border border-gray-200 rounded-xl bg-white"
+                    onError={(e) => { const a = e.target.closest("a"); if (a) a.style.display = "none"; }}
+                  />
+                </a>
+              )}
+            </div>
 
             <div className="flex flex-wrap gap-3 mt-5">
               <div className="border border-gray-200 rounded-xl px-4 py-3">
