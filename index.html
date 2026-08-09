@@ -504,7 +504,7 @@ async function extractInvoice(prep, cfg) {
 この請求書(スキャンPDFまたはスマホ写真の場合あり。斜め・影・手ブレがあっても可能な限り読み取る)から明細を抽出し、改行なしの1行のJSONだけを返してください。前置き・コードブロック記号は一切不要です。
 
 形式(キーは必ずこの短縮名を使う):
-{"s":"仕入先名","no":"請求書番号","d":"YYYY-MM-DD","items":[{"n":"材料名","mk":"メーカー","sp":"規格・寸法・容量","c":"分類","q":数量,"u":"単位","p":単価,"t":"ex","a":金額,"m":"特記"}]}
+{"s":"仕入先名","no":"請求書番号","d":"YYYY-MM-DD","g":"現場名・工事名・件名(記載があれば。例: 山田様邸新築工事)","items":[{"n":"材料名","mk":"メーカー","sp":"規格・寸法・容量","c":"分類","q":数量,"u":"単位","p":単価,"t":"ex","a":金額,"m":"特記"}]}
 
 ルール:
 - ${CATEGORY_LINE}
@@ -549,19 +549,20 @@ async function extractInvoice(prep, cfg) {
   // ページ画像が多い場合は3ページずつに分けて送信(サイズ・時間の問題を回避)
   const BATCH = 3;
   let usedFallback = false;
-  let head = { s: "", no: "", d: "" };
+  let head = { s: "", no: "", d: "", g: "" };
   let items = [];
   if (prep.type === "images" && prep.images.length > BATCH) {
     for (let i = 0; i < prep.images.length; i += BATCH) {
       const sub = { ...prep, images: prep.images.slice(i, i + BATCH) };
       const note =
         "\n\n注: これは同一請求書の " + (i + 1) + "〜" + Math.min(i + BATCH, prep.images.length) +
-        " ページ目です。ヘッダ情報(s,no,d)は分かる範囲で記載してください。";
+        " ページ目です。ヘッダ情報(s,no,d,g)は分かる範囲で記載してください。";
       const { parsed, fb } = await runOnce(sub, note);
       usedFallback = usedFallback || fb;
       head.s = head.s || parsed.s || parsed.supplier || "";
       head.no = head.no || parsed.no || parsed.invoice_no || "";
       head.d = head.d || parsed.d || parsed.invoice_date || "";
+      head.g = head.g || parsed.g || "";
       items = items.concat((parsed.items || []).map(expandItem));
     }
   } else {
@@ -571,6 +572,7 @@ async function extractInvoice(prep, cfg) {
       s: parsed.s ?? parsed.supplier ?? "",
       no: parsed.no ?? parsed.invoice_no ?? "",
       d: parsed.d ?? parsed.invoice_date ?? "",
+      g: parsed.g ?? "",
     };
     items = (parsed.items || []).map(expandItem);
   }
@@ -586,6 +588,7 @@ async function extractInvoice(prep, cfg) {
     supplier: head.s,
     invoice_no: head.no,
     invoice_date: head.d,
+    site: head.g,
     items,
     engine_note: usedFallback,
   };
@@ -812,6 +815,7 @@ function flatten(invoices) {
         invoice_date: inv.invoice_date,
         invoice_no: inv.invoice_no,
         invoice_id: inv.id,
+        site: inv.site || "",
       });
     }
   }
@@ -977,7 +981,7 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
               else { close(); onSubmit(); }
             }
           }}
-          placeholder="材料名・メーカー・性質で検索(例: 桧 KD材 / VVF 2.0 / 水性 遮熱)"
+          placeholder="材料名・メーカー・性質・現場名で検索(例: 桧 KD材 / VVF 2.0 / 山田様邸)"
           className="flex-1 w-0 min-w-0 lg:min-w-[10rem] outline-none px-3 text-base bg-transparent"
         />
         {value && (
@@ -1255,16 +1259,34 @@ function ShizaiSearch() {
   };
   const engineCfg = { engine, geminiKey: geminiKey.trim(), geminiModel: geminiModel.trim() };
 
+  // 発注履歴の納品先(現場名・住所)を資材キーごとに集める。
+  // 現場向けに発注した資材を、その現場名の検索でヒットさせるため。
+  const orderSitesByKey = useMemo(() => {
+    const m = {};
+    for (const e of orderLog) {
+      if (!e.address) continue;
+      for (const it of e.items || []) {
+        const k = norm(it.name) + "|" + norm(it.maker || "");
+        m[k] = m[k] ? m[k] + " " + e.address : e.address;
+      }
+    }
+    return m;
+  }, [orderLog]);
   const allItems = useMemo(
     () =>
       flatten(invoices).map((it) => {
-        const t = aiTags[norm(it.name) + "|" + norm(it.maker)];
-        return t && t.tags && t.tags.length ? { ...it, ai_tags: t.tags.join(" ") } : it;
+        const key = norm(it.name) + "|" + norm(it.maker);
+        const t = aiTags[key];
+        const os = orderSitesByKey[key];
+        const extra = {};
+        if (t && t.tags && t.tags.length) extra.ai_tags = t.tags.join(" ");
+        if (os) extra.order_sites = os;
+        return { ...it, ...extra };
       }),
-    [invoices, aiTags]
+    [invoices, aiTags, orderSitesByKey]
   );
   const hits = useMemo(
-    () => searchRows(allItems, committed, ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags"]),
+    () => searchRows(allItems, committed, ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags", "site", "order_sites"]),
     [allItems, committed]
   );
   const groups = useMemo(() => groupByMaterial(hits), [hits]);
@@ -1335,7 +1357,7 @@ function ShizaiSearch() {
     go("results");
     setAiAnswer("loading");
     try {
-      const scope = searchRows(allItems, q, ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags"]);
+      const scope = searchRows(allItems, q, ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags", "site", "order_sites"]);
       const ans = await askAI(q, scope.length ? scope : allItems, engineCfg);
       setAiAnswer(ans || "回答を取得できませんでした。");
     } catch {
@@ -1436,7 +1458,9 @@ function ShizaiSearch() {
             continue;
           }
           current = current.map((inv) =>
-            inv.sig === sig ? { ...inv, items: [...inv.items, ...fresh] } : inv
+            inv.sig === sig
+              ? { ...inv, items: [...inv.items, ...fresh], site: inv.site || parsed.site || "" }
+              : inv
           );
           await sset(INVOICES_KEY, current);
           setInvoices(current);
@@ -1457,6 +1481,7 @@ function ShizaiSearch() {
           supplier: parsed.supplier || "不明な仕入先",
           invoice_no: parsed.invoice_no || "",
           invoice_date: parsed.invoice_date || "",
+          site: parsed.site || "",
           items: (parsed.items || []).filter((it) => it.name),
           added_at: new Date().toISOString(),
         };
@@ -1637,11 +1662,16 @@ function ShizaiSearch() {
         const freshGroups = groupByMaterial(
           searchRows(
             flatten(next).map((it) => {
-              const t = aiTags[norm(it.name) + "|" + norm(it.maker)];
-              return t && t.tags && t.tags.length ? { ...it, ai_tags: t.tags.join(" ") } : it;
+              const key = norm(it.name) + "|" + norm(it.maker);
+              const t = aiTags[key];
+              const os = orderSitesByKey[key];
+              const extra = {};
+              if (t && t.tags && t.tags.length) extra.ai_tags = t.tags.join(" ");
+              if (os) extra.order_sites = os;
+              return { ...it, ...extra };
             }),
             committed,
-            ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags"]
+            ["name", "maker", "spec", "category", "notes", "supplier", "ai_tags", "site", "order_sites"]
           )
         );
         const g2 = freshGroups.find((g) => g.key === detail.key);
@@ -1649,7 +1679,7 @@ function ShizaiSearch() {
         else goBack();
       }
     },
-    [invoices, detail, committed, goBack, aiTags]
+    [invoices, detail, committed, goBack, aiTags, orderSitesByKey]
   );
 
   // ---------- AI検索タグ ----------
