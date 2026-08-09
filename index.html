@@ -667,17 +667,19 @@ async function fetchMaterialTags(group, cfg) {
 この商品の「成分・樹脂種別・水性/油性・用途・部位・一般名称・同義語・略称」を表す検索キーワードを日本語で10〜20個挙げてください。
 目的: 商品名に含まれない語でも検索でヒットさせるためです(例: 商品名に「シリコン」が無い水性シリコン塗料を「シリコン」で見つける)。
 
-あわせて、メーカー公式サイトや商品ページに掲載されている商品画像も探してください。
+あわせて、メーカー公式サイトや商品ページに掲載されている商品画像と、
+電子カタログ・技術資料(カタログPDF、仕様書・技術データシート、色見本、施工要領書、SDS など)も探してください。
 
 回答の最後に次のJSONだけを1つ出力してください:
 {
   "tags": ["キーワード1", "キーワード2", ...],
   "summary": "商品の一言説明(30字以内)",
   "image_url": "商品画像の直リンクURL(https で始まり .jpg/.png/.webp 等で終わる実在のURL)。検索結果で実際に確認できたものだけ。無ければ null",
-  "image_source": "その画像が載っている商品ページのURL。無ければ null"
+  "image_source": "その画像が載っている商品ページのURL。無ければ null",
+  "catalogs": [{ "title": "資料名(8字以内。例: カタログ, 色見本, 仕様書, 施工要領)", "url": "https で始まる実在のURL(PDF直リンクか資料ページ)" }]
 }
 
-画像URLは推測で作らず、Web検索で実際に確認できたものだけを出してください。
+catalogs は重要な順に最大3件。画像URL・資料URLは推測で作らず、Web検索で実際に確認できたものだけを出してください。無ければ catalogs は [] にしてください。
 Webで確証が得られない場合も、商品名・メーカー・分類から推定できる一般的な種別キーワードを挙げ、summary の末尾に(推定)と付けてください。`;
   let text;
   if (cfg && cfg.geminiKey) {
@@ -695,6 +697,10 @@ Webで確証が得られない場合も、商品名・メーカー・分類か�
     summary: parsed.summary || "",
     image: httpsUrl(parsed.image_url),
     image_source: httpsUrl(parsed.image_source),
+    catalogs: (Array.isArray(parsed.catalogs) ? parsed.catalogs : [])
+      .map((c) => ({ title: String((c && c.title) || "資料").trim().slice(0, 12), url: httpsUrl(c && c.url) }))
+      .filter((c) => c.url)
+      .slice(0, 3),
   };
 }
 
@@ -1890,6 +1896,20 @@ ${window.location.href.split("#")[0]}
                 </div>
               );
             })()}
+            {tg && tg.catalogs && tg.catalogs.length > 0 && (
+              <div className="text-xs mt-2 flex items-center gap-1.5 flex-wrap">
+                <span className="text-gray-400">資料:</span>
+                {tg.catalogs.map((c, i) => (
+                  <a
+                    key={i}
+                    href={c.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-green-800 border border-green-200 hover:bg-green-50 rounded-full px-2.5 py-0.5"
+                  >{c.title}</a>
+                ))}
+              </div>
+            )}
               </div>
               {tg && tg.image ? (
                 <a
