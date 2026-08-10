@@ -11,6 +11,41 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+// 設定値の書き込み(POST setconfig)。ファイルマネージャが使えない環境用。
+// 誰でも書き換えられないよう、config.php が未完成のとき(値が空)だけ許可する。
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_GET['setconfig'])) {
+  $path = __DIR__ . '/config.php';
+  if (!file_exists($path)) {
+    http_response_code(400);
+    echo json_encode(['error' => '先に ?mkconfig=1 で雛形を作成してください'], JSON_UNESCAPED_UNICODE);
+    exit;
+  }
+  $cur = file_get_contents($path);
+  // 既に DB パスワードが入っている(設置済み)なら拒否
+  if (preg_match("/define\('DB_PASS',\s*'(?!ここに)[^']+'\)/", $cur)) {
+    http_response_code(403);
+    echo json_encode(['error' => '設定済みのため変更できません。変更はファイルマネージャで行ってください'], JSON_UNESCAPED_UNICODE);
+    exit;
+  }
+  $in = json_decode(file_get_contents('php://input'), true);
+  if (!is_array($in)) { http_response_code(400); echo json_encode(['error' => '入力がJSONではありません'], JSON_UNESCAPED_UNICODE); exit; }
+  $allowed = ['DB_HOST','DB_NAME','DB_USER','DB_PASS','GEMINI_API_KEY','ANTHROPIC_API_KEY','ALLOWED_ORIGIN','SETUP_TOKEN'];
+  $done = [];
+  foreach ($allowed as $key) {
+    if (!array_key_exists($key, $in)) continue;
+    $val = (string)$in[$key];
+    if (strpos($val, "'") !== false || strpos($val, "\n") !== false) {
+      http_response_code(400); echo json_encode(['error' => "使用できない文字が含まれます: $key"], JSON_UNESCAPED_UNICODE); exit;
+    }
+    $new = preg_replace("/define\('" . $key . "',\s*'[^']*'\)/", "define('" . $key . "', '" . $val . "')", $cur, 1, $cnt);
+    if ($cnt > 0) { $cur = $new; $done[] = $key; }
+  }
+  echo file_put_contents($path, $cur) !== false
+    ? json_encode(['ok' => true, 'updated' => $done], JSON_UNESCAPED_UNICODE)
+    : json_encode(['error' => '書き込みに失敗しました'], JSON_UNESCAPED_UNICODE);
+  exit;
+}
+
 // config.php が無い場合、?mkconfig=1 で見本から雛形を作る(値は後で手入力)
 if (!file_exists(__DIR__ . '/config.php')) {
   if (isset($_GET['mkconfig'])) {
