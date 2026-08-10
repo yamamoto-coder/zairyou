@@ -4,6 +4,21 @@
 declare(strict_types=1);
 header('Content-Type: text/plain; charset=utf-8');
 
+// config.php の雛形を作る(?mkconfig=1)。中身の秘密情報は後で手で入れる。
+if (isset($_GET['mkconfig'])) {
+  $path = __DIR__ . '/config.php';
+  if (file_exists($path)) {
+    echo "既に config.php があります(上書きしません)\n";
+    exit;
+  }
+  $tpl = @file_get_contents(__DIR__ . '/config.sample.php');
+  if ($tpl === false) { echo "config.sample.php がありません\n"; exit; }
+  echo file_put_contents($path, $tpl) !== false
+    ? "config.php を作成しました。ファイルマネージャで編集して値を入れてください。\n"
+    : "config.php の作成に失敗しました(書き込み権限を確認)\n";
+  exit;
+}
+
 $base = 'https://raw.githubusercontent.com/yamamoto-coder/zairyou/main/server/';
 $targets = [
   'api/common.php'        => __DIR__ . '/common.php',

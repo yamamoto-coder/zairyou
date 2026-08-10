@@ -1,0 +1,4 @@
+# API 本体以外の直接アクセスを禁止(テーブル定義や設置補助ファイルの露出防止)
+<FilesMatch "\.(sql|md)$">
+  Require all denied
+</FilesMatch>
