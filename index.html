@@ -280,6 +280,113 @@ async function docsDeleteForInvoice(invoiceId) {
   });
 }
 
+// ---------- 以前のデータの引き継ぎ ----------
+// サーバー保存に切り替える前に、このパソコンのブラウザへ保存されていた
+// データをサーバーへ移すための処理。window.storage のシムを通すと
+// サーバー側を読んでしまうため、ここでは localStorage と IndexedDB を
+// 直接読む。
+const MIGRATE_KEYS = [
+  INVOICES_KEY, PRICELIST_KEY, INBOX_KEY, SETTINGS_KEY, HISTORY_KEY,
+  SITES_KEY, TAGS_KEY, CART_KEY, ADDR_KEY, ORDER_TPL_KEY, ORDERS_KEY,
+];
+
+// このブラウザに残っている旧データ(キーと中身)
+function legacyKvEntries() {
+  const out = [];
+  for (const k of MIGRATE_KEYS) {
+    const v = localStorage.getItem("p:" + k);
+    if (v != null) { out.push({ k, v }); continue; }
+    const sv = localStorage.getItem("shared:" + k); // 共有扱いだった項目
+    if (sv != null) out.push({ k, v: sv });
+  }
+  return out;
+}
+
+// IndexedDB に残っている原本書類(PDF・写真)をすべて取り出す
+async function legacyDocsAll() {
+  if (!window.indexedDB) return [];
+  let db;
+  try { db = await docDb(); } catch { return []; }
+  return new Promise((res) => {
+    try {
+      const req = db.transaction("docs").objectStore("docs").getAll();
+      req.onsuccess = () => res((req.result || []).filter((d) => d && d.blob));
+      req.onerror = () => res([]);
+    } catch { res([]); }
+  });
+}
+
+// 引き継げるものがどれだけ残っているかを数える(案内の出し分け用)
+async function legacyCounts() {
+  const kv = legacyKvEntries();
+  const docs = await legacyDocsAll();
+  return { kv: kv.length, docs: docs.length, total: kv.length + docs.length };
+}
+
+// サーバー側に既にある内容と混ぜ合わせる。
+// 複数のパソコンから順番に引き継ぐときに、後から来た方が
+// 先に入れた分を消してしまわないようにするため。
+function mergeStored(serverText, localText) {
+  if (serverText == null) return localText;
+  let s, l;
+  try { s = JSON.parse(serverText); l = JSON.parse(localText); } catch { return serverText; }
+  // 一覧(請求書・料金表・発注履歴・納品先など): id が同じものは片方だけ残す
+  if (Array.isArray(s) && Array.isArray(l)) {
+    const merged = s.slice();
+    const known = new Set(s.map((x) => (x && x.id != null ? String(x.id) : JSON.stringify(x))));
+    for (const item of l) {
+      const key = item && item.id != null ? String(item.id) : JSON.stringify(item);
+      if (!known.has(key)) { known.add(key); merged.push(item); }
+    }
+    return JSON.stringify(merged);
+  }
+  // 対応表(AI検索タグなど): 両方の項目を残し、重なった分はサーバー側を優先
+  if (s && l && typeof s === "object" && typeof l === "object") {
+    return JSON.stringify({ ...l, ...s });
+  }
+  return serverText; // 単一の値はサーバー側を尊重する
+}
+
+// 書類の形式。空だとサーバーに拒否されるため拡張子から補う
+function docMime(d) {
+  const m = (d.mime || (d.blob && d.blob.type) || "").toLowerCase();
+  if (m) return m;
+  const ext = (d.name || "").toLowerCase().split(".").pop();
+  return { pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heic: "image/heic" }[ext] || "image/jpeg";
+}
+
+// 旧データをサーバーへ送る。onProgress で進み具合を画面に返す
+async function migrateLegacyToServer(onProgress) {
+  const kv = legacyKvEntries();
+  const result = { kv: 0, docs: 0, failed: 0 };
+  for (const { k, v } of kv) {
+    onProgress("データを引き継いでいます… " + (result.kv + 1) + " / " + kv.length);
+    let value = v;
+    try {
+      const cur = await api("storage.php?k=" + encodeURIComponent(k));
+      value = mergeStored(cur.value, v);
+    } catch { /* 読めない場合はこのパソコンの内容をそのまま入れる */ }
+    await api("storage.php", { method: "POST", json: { k, v: value } });
+    result.kv++;
+  }
+  const docs = await legacyDocsAll();
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    onProgress("書類を引き継いでいます… " + (i + 1) + " / " + docs.length);
+    try {
+      if (d.hash) {
+        const dup = await docFindByHash(d.hash); // 同じ書類が既にあれば送らない
+        if (dup) { result.docs++; continue; }
+      }
+      await docPut({ ...d, mime: docMime(d) });
+      result.docs++;
+    } catch {
+      result.failed++;
+    }
+  }
+  return result;
+}
+
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -1354,6 +1461,8 @@ function ShizaiSearch() {
   // サーバー保存を使う場合のログイン状態(未ログインならログイン画面を出す)
   const [account, setAccount] = useState(null); // {email, role, company}
   const [authReady, setAuthReady] = useState(!API_BASE);
+  const [legacy, setLegacy] = useState(null); // このパソコンに残る旧データ {kv, docs, total}
+  const [migrating, setMigrating] = useState(""); // 引き継ぎ中の進捗表示
   const [view, setView] = useState("home"); // home | results | detail | manage | supplier
   const [query, setQuery] = useState("");
   const [committed, setCommitted] = useState("");
@@ -1426,6 +1535,12 @@ function ShizaiSearch() {
       setAuthReady(true);
     })();
   }, []);
+
+  // このパソコンに引き継げる旧データが残っているかを調べる
+  useEffect(() => {
+    if (!account) { setLegacy(null); return; }
+    legacyCounts().then(setLegacy).catch(() => setLegacy(null));
+  }, [account]);
 
   const logout = useCallback(async () => {
     try { await api("auth.php", { method: "POST", json: { action: "logout" } }); } catch {}
@@ -3129,32 +3244,61 @@ ${window.location.href.split("#")[0]}
                 データは会社ごとにサーバーへ保存され、社内の全員で共有されます。
                 パソコンを変えても同じデータが見られます。
               </p>
-              <div className="mt-3 flex items-center gap-3 flex-wrap">
+              <div className="mt-3">
                 <button
                   onClick={() => { if (window.confirm("ログアウトしますか?")) logout(); }}
                   className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-4 py-1.5"
                 >ログアウト</button>
-                <button
-                  onClick={async () => {
-                    if (!window.confirm("このパソコンに残っている以前のデータをサーバーへ引き継ぎますか?\n(サーバー側に同じ項目がある場合は上書きされます)")) return;
-                    const keys = [INVOICES_KEY, PRICELIST_KEY, SETTINGS_KEY, HISTORY_KEY, SITES_KEY, TAGS_KEY, CART_KEY, ADDR_KEY, ORDER_TPL_KEY, ORDERS_KEY];
-                    const bulk = [];
-                    for (const k of keys) {
-                      const v = localStorage.getItem("p:" + k);
-                      if (v != null) bulk.push({ k, v });
-                    }
-                    if (!bulk.length) { window.alert("引き継ぐデータはありませんでした"); return; }
-                    try {
-                      await api("storage.php", { method: "POST", json: { bulk } });
-                      window.alert(bulk.length + " 件のデータをサーバーへ引き継ぎました。画面を再読み込みします");
-                      location.reload();
-                    } catch (e) {
-                      window.alert("引き継ぎに失敗しました: " + ((e && e.message) || ""));
-                    }
-                  }}
-                  className="text-sm text-green-800 border border-green-200 hover:bg-green-50 rounded px-4 py-1.5"
-                  title="このパソコンのブラウザに残っている以前のデータをサーバーへ移します"
-                >このパソコンの以前のデータを引き継ぐ</button>
+              </div>
+
+              {/* 以前のデータの引き継ぎ */}
+              <div className="mt-4 pt-4 border-t border-gray-100">
+                <h3 className="text-sm font-medium">以前のデータの引き継ぎ</h3>
+                {legacy === null ? (
+                  <p className="text-xs text-gray-500 mt-1.5">確認しています…</p>
+                ) : legacy.total > 0 ? (
+                  <>
+                    <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+                      このパソコンに、サーバー保存へ切り替える前のデータが残っています
+                      (データ {legacy.kv} 件{legacy.docs > 0 ? `・書類 ${legacy.docs} 件` : ""})。
+                      サーバーへ移すと、社内の全員が同じ内容を見られるようになります。
+                      サーバーに既にある内容は消さずに足し合わせます。
+                    </p>
+                    <button
+                      disabled={!!migrating}
+                      onClick={async () => {
+                        if (!window.confirm("このパソコンに残っている以前のデータをサーバーへ移しますか?")) return;
+                        setMigrating("準備しています…");
+                        try {
+                          const r = await migrateLegacyToServer(setMigrating);
+                          window.alert(
+                            "引き継ぎが完了しました。\n" +
+                            "データ " + r.kv + " 件 / 書類 " + r.docs + " 件" +
+                            (r.failed ? "\n(" + r.failed + " 件の書類は移せませんでした)" : "") +
+                            "\n画面を読み込み直します。"
+                          );
+                          location.reload();
+                        } catch (e) {
+                          setMigrating("");
+                          window.alert("引き継ぎに失敗しました: " + ((e && e.message) || ""));
+                        }
+                      }}
+                      className="mt-3 text-sm text-white bg-green-700 hover:bg-green-800 disabled:bg-gray-300 rounded px-4 py-2"
+                    >{migrating || "このパソコンの以前のデータをサーバーへ移す"}</button>
+                    {legacy.docs > 50 && !migrating && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        書類が多いため数分かかることがあります。完了するまで画面を閉じないでください。
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+                    このパソコンには、引き継ぐ以前のデータは残っていません。
+                    別のパソコンや、以前使っていた画面に古いデータがある場合は、
+                    <span className="font-medium">そちらの画面を開いてログインし、この欄から引き継ぎ</span>
+                    を行ってください。同じ操作を何度行っても、データが二重になることはありません。
+                  </p>
+                )}
               </div>
             </div>
           )}
