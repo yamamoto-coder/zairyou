@@ -1499,6 +1499,9 @@ function ShizaiSearch() {
   const [connTest, setConnTest] = useState(null); // null | "working" | {claude, gemini}
   const [predictions, setPredictions] = useState({}); // key -> result
   const [predicting, setPredicting] = useState({});
+  // 月別材料費ページ用
+  const [costYear, setCostYear] = useState(""); // 表示する年("" = 全期間)
+  const [costOpen, setCostOpen] = useState(null); // 内訳を開いている月 "YYYY-MM"
   // 仕入先ページ用
   const [supName, setSupName] = useState("");
   const [supDone, setSupDone] = useState(null);
@@ -1631,6 +1634,38 @@ function ShizaiSearch() {
     }
     return [...set.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   }, [allItems]);
+
+  // ---------- 月別材料費の集計 ----------
+  // 明細の金額を購入月ごとに合計する。金額欄が無い明細は 単価×数量 で補い、
+  // それも無いものは合計に入れず件数だけ知らせる。税表示の切替に追従する。
+  const monthlyCosts = useMemo(() => {
+    const conv = (n, t) => {
+      let v = Number(n);
+      if (taxMode === "in" && t !== "in") v = v * (1 + TAX_RATE);
+      if (taxMode === "ex" && t === "in") v = v / (1 + TAX_RATE);
+      return v;
+    };
+    const map = new Map(); // "YYYY-MM" -> 集計
+    let noDate = 0;
+    for (const it of allItems) {
+      const m = String(it.invoice_date || "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(m)) { noDate++; continue; }
+      if (!map.has(m)) map.set(m, { month: m, total: 0, count: 0, noAmount: 0, byCategory: new Map(), bySupplier: new Map() });
+      const g = map.get(m);
+      let a = it.amount;
+      if (a == null && it.unit_price != null && it.quantity != null) a = it.unit_price * it.quantity;
+      if (a == null || isNaN(Number(a))) { g.noAmount++; continue; }
+      const v = conv(a, it.price_tax);
+      g.total += v;
+      g.count++;
+      const cat = (it.category || "").trim() || "分類なし";
+      g.byCategory.set(cat, (g.byCategory.get(cat) || 0) + v);
+      const sup = (it.supplier || "").trim() || "仕入先不明";
+      g.bySupplier.set(sup, (g.bySupplier.get(sup) || 0) + v);
+    }
+    const months = [...map.values()].sort((a, b) => b.month.localeCompare(a.month));
+    return { months, noDate };
+  }, [allItems, taxMode]);
 
   // ---------- 画面遷移(戻る対応) ----------
   const go = useCallback(
@@ -2422,6 +2457,9 @@ ${window.location.href.split("#")[0]}
             <button onClick={() => go("orders")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
               発注履歴
             </button>
+            <button onClick={() => go("monthly")} className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 border border-gray-100 hover:border-gray-200 rounded">
+              月別材料費
+            </button>
           </div>
 
           {loaded && categories.length > 0 && (
@@ -3007,6 +3045,119 @@ ${window.location.href.split("#")[0]}
                   </div>
                 ))}
               </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ================= 月別材料費 ================= */}
+      {view === "monthly" && (
+        <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-xl font-bold">月別材料費</h1>
+            <div className="flex rounded-full border border-gray-200 overflow-hidden text-xs">
+              <button
+                onClick={() => changeTax("ex")}
+                className={"px-2.5 py-1 " + (taxMode === "ex" ? "bg-green-700 text-white" : "bg-white text-gray-500 hover:bg-gray-50")}
+              >税別</button>
+              <button
+                onClick={() => changeTax("in")}
+                className={"px-2.5 py-1 " + (taxMode === "in" ? "bg-green-700 text-white" : "bg-white text-gray-500 hover:bg-gray-50")}
+              >税込</button>
+            </div>
+            {monthlyCosts.months.length > 0 && (
+              <select
+                value={costYear}
+                onChange={(e) => setCostYear(e.target.value)}
+                className="ml-auto text-base sm:text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white outline-none focus:border-green-600"
+              >
+                <option value="">すべての年</option>
+                {[...new Set(monthlyCosts.months.map((m) => m.month.slice(0, 4)))].sort().reverse().map((y) => (
+                  <option key={y} value={y}>{y}年</option>
+                ))}
+              </select>
+            )}
+          </div>
+          {(() => {
+            if (!monthlyCosts.months.length) {
+              return (
+                <div className="mt-10 text-center text-sm text-gray-400 leading-relaxed">
+                  まだ集計できるデータがありません。<br />
+                  請求書を取り込むと、月ごとの材料費がここに表示されます。
+                </div>
+              );
+            }
+            const list = monthlyCosts.months.filter((m) => !costYear || m.month.slice(0, 4) === costYear);
+            if (!list.length) {
+              return <div className="mt-8 text-sm text-gray-400">この年のデータはありません。</div>;
+            }
+            const maxTotal = Math.max(...list.map((m) => m.total), 1);
+            const sum = list.reduce((s, m) => s + m.total, 0);
+            const fmtY = (v) => "¥" + Math.round(v).toLocaleString("ja-JP");
+            const top = (mp, n) => [...mp.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
+            return (
+              <>
+                <div className="mt-3 text-sm text-gray-600">
+                  {costYear ? costYear + "年の合計" : "全期間の合計"}:{" "}
+                  <span className="font-bold text-green-800 text-base">{fmtY(sum)}</span>
+                  <span className="ml-2 text-xs text-gray-400">({list.reduce((s, m) => s + m.count, 0)} 明細)</span>
+                </div>
+                <div className="mt-4 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                  {list.map((m) => (
+                    <div key={m.month}>
+                      <button
+                        onClick={() => setCostOpen(costOpen === m.month ? null : m.month)}
+                        className="w-full px-4 py-3 hover:bg-gray-50 text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-medium shrink-0 w-24">
+                            {m.month.slice(0, 4)}年{Number(m.month.slice(5, 7))}月
+                          </span>
+                          <div className="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden min-w-0">
+                            <div
+                              className="h-full bg-green-600 rounded-full"
+                              style={{ width: Math.max((m.total / maxTotal) * 100, 2) + "%" }}
+                            />
+                          </div>
+                          <span className="text-sm font-bold text-right shrink-0" style={{ minWidth: "6.5rem" }}>{fmtY(m.total)}</span>
+                          <span className="text-gray-400 text-xs shrink-0">{costOpen === m.month ? "▲" : "▼"}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-400 pl-0.5">
+                          {m.count} 明細
+                          {m.noAmount > 0 && <>(金額不明 {m.noAmount} 件は合計に含まれていません)</>}
+                        </div>
+                      </button>
+                      {costOpen === m.month && (
+                        <div className="px-4 pb-4 grid sm:grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-xs font-medium text-gray-500 mb-1.5">分類別</div>
+                            {top(m.byCategory, 8).map(([k, v]) => (
+                              <div key={k} className="flex justify-between text-sm py-0.5">
+                                <span className="text-gray-700 truncate mr-3">{k}</span>
+                                <span className="shrink-0">{fmtY(v)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div>
+                            <div className="text-xs font-medium text-gray-500 mb-1.5">仕入先別</div>
+                            {top(m.bySupplier, 8).map(([k, v]) => (
+                              <div key={k} className="flex justify-between text-sm py-0.5">
+                                <span className="text-gray-700 truncate mr-3">{k}</span>
+                                <span className="shrink-0">{fmtY(v)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {monthlyCosts.noDate > 0 && (
+                  <p className="mt-3 text-xs text-gray-400">
+                    購入日を読み取れなかった明細 {monthlyCosts.noDate} 件は集計に含まれていません。
+                  </p>
+                )}
+              </>
             );
           })()}
         </div>
