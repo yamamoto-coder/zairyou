@@ -41,7 +41,12 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 //  API_BASE が設定されていればサーバー保存(会社ごとに分離・全社員で共有)。
 //  空にすると従来どおり各パソコンのブラウザ内保存で動く。
 // ============================================================
-const API_BASE = "https://tonya.craftfile.jp/api/";
+// 同じサーバー上に置かれている場合は相対パス、それ以外(GitHub Pages・
+// ローカル確認)からは絶対URLで同じサーバーのAPIに繋ぐ
+const API_BASE =
+  location.hostname === "tonya.craftfile.jp"
+    ? "api/"
+    : "https://tonya.craftfile.jp/api/";
 const TOKEN_KEY = "shizai-auth-token";
 
 const auth = {
