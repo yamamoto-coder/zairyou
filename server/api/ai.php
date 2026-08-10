@@ -67,6 +67,41 @@ try {
     error_log('[tonya-api ai] curl: ' . $err);
     respond(['error' => 'AIサービスへの接続に失敗しました'], 502);
   }
+
+  // 利用量(トークン数)を会社ごとに記録する(失敗しても応答は返す)
+  if ($status === 200) {
+    try {
+      db()->exec("CREATE TABLE IF NOT EXISTS api_usage (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL,
+        provider VARCHAR(20) NOT NULL,
+        model VARCHAR(80) NOT NULL DEFAULT '',
+        prompt_tokens INT NOT NULL DEFAULT 0,
+        output_tokens INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_company_time (company_id, created_at)
+      ) CHARACTER SET utf8mb4");
+      $data = json_decode($res, true);
+      $pin = 0; $pout = 0; $usedModel = '';
+      if ($provider === 'gemini' && isset($data['usageMetadata'])) {
+        $um = $data['usageMetadata'];
+        $pin = (int)($um['promptTokenCount'] ?? 0);
+        $pout = max(0, (int)($um['totalTokenCount'] ?? 0) - $pin); // 出力+思考ぶん
+        $usedModel = (string)($data['modelVersion'] ?? $model);
+      } elseif ($provider === 'claude' && isset($data['usage'])) {
+        $pin = (int)($data['usage']['input_tokens'] ?? 0);
+        $pout = (int)($data['usage']['output_tokens'] ?? 0);
+        $usedModel = (string)($data['model'] ?? '');
+      }
+      if ($pin > 0 || $pout > 0) {
+        $st = db()->prepare('INSERT INTO api_usage (company_id, provider, model, prompt_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)');
+        $st->execute([$auth['company_id'], $provider, substr($usedModel, 0, 80), $pin, $pout]);
+      }
+    } catch (Throwable $e) {
+      error_log('[tonya-api ai] usage log: ' . $e->getMessage());
+    }
+  }
+
   http_response_code($status ?: 200);
   header('Content-Type: application/json; charset=utf-8');
   header('X-Content-Type-Options: nosniff');

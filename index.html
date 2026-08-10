@@ -1602,7 +1602,8 @@ function ShizaiSearch() {
   const [legacy, setLegacy] = useState(null); // このパソコンに残る旧データ {kv, docs, total}
   const [migrating, setMigrating] = useState(""); // 引き継ぎ中の進捗表示
   // 導入社の管理(サービス運営者のみ)
-  const [tenants, setTenants] = useState(null); // {companies: [...], my_company}
+  const [tenants, setTenants] = useState(null); // {companies: [...], my_company, rates}
+  const [tenantQuery, setTenantQuery] = useState(""); // 会社名の絞り込み
   // 社員の管理(管理者のみ)
   const [staff, setStaff] = useState(null); // {users: [...], me: 自分のID}
   const [nsEmail, setNsEmail] = useState(""); // 追加フォーム
@@ -1703,14 +1704,14 @@ function ShizaiSearch() {
 
   // ---------- 導入社の管理(サービス運営者のみ) ----------
   useEffect(() => {
-    if (view !== "manage" || !account || !account.owner || !auth.on) return;
+    if (view !== "tenants" || !account || !account.owner || !auth.on) return;
     api("auth.php", { method: "POST", json: { action: "owner_companies" } })
       .then(setTenants)
       .catch(() => setTenants(null));
   }, [view, account]);
 
   const fmtBytes = (b) => {
-    if (!b) return "0";
+    if (!b) return "0 KB";
     if (b < 1024 * 1024) return Math.max(1, Math.round(b / 1024)) + " KB";
     return (b / (1024 * 1024)).toFixed(1) + " MB";
   };
@@ -3470,6 +3471,101 @@ ${window.location.href.split("#")[0]}
       )}
 
       {/* ================= データ管理 ================= */}
+      {view === "tenants" && account && account.owner && (
+        <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840, marginLeft: "auto", marginRight: "auto" }}>
+          <h1 className="text-xl font-bold">
+            導入社の管理
+            <span className="ml-2 text-xs font-normal text-white bg-gray-700 rounded-full px-2 py-0.5 align-middle">運営者専用</span>
+          </h1>
+          <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+            各社のデータの中身(請求書や価格)は、運営者にも表示されません。件数・容量・AI利用料のみを集計しています。
+          </p>
+          {!tenants ? (
+            <p className="mt-6 text-sm text-gray-400">読み込んでいます…</p>
+          ) : (() => {
+            const rates = tenants.rates || { in_usd: 1.5, out_usd: 9.0, usd_jpy: 150 };
+            const aiCost = (tin, tout) => (Number(tin) / 1e6) * rates.in_usd + (Number(tout) / 1e6) * rates.out_usd;
+            const fmtUsd = (v) => "$" + (v < 0.005 ? "0.00" : v.toFixed(2));
+            const fmtCost = (v) => fmtUsd(v) + "(約" + Math.round(v * rates.usd_jpy).toLocaleString("ja-JP") + "円)";
+            const fmtTok = (n) => {
+              n = Number(n);
+              if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+              if (n >= 1000) return Math.round(n / 1000) + "k";
+              return String(n);
+            };
+            const all = tenants.companies || [];
+            const q = norm(tenantQuery.trim());
+            const list = q ? all.filter((c) => norm(c.name).includes(q)) : all;
+            const mTotal = all.reduce((s, c) => s + aiCost(c.m_in, c.m_out), 0);
+            const tTotal = all.reduce((s, c) => s + aiCost(c.t_in, c.t_out), 0);
+            return (
+              <>
+                <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="border border-gray-200 rounded-xl p-4">
+                    <div className="text-xs text-gray-500">導入社数</div>
+                    <div className="mt-1 text-2xl font-bold">{all.length} <span className="text-sm font-normal">社</span></div>
+                  </div>
+                  <div className="border border-gray-200 rounded-xl p-4">
+                    <div className="text-xs text-gray-500">今月のAI利用料(全社合計)</div>
+                    <div className="mt-1 text-2xl font-bold">{fmtUsd(mTotal)}</div>
+                    <div className="text-xs text-gray-500">約{Math.round(mTotal * rates.usd_jpy).toLocaleString("ja-JP")}円</div>
+                  </div>
+                  <div className="border border-gray-200 rounded-xl p-4">
+                    <div className="text-xs text-gray-500">累計のAI利用料</div>
+                    <div className="mt-1 text-2xl font-bold">{fmtUsd(tTotal)}</div>
+                    <div className="text-xs text-gray-500">約{Math.round(tTotal * rates.usd_jpy).toLocaleString("ja-JP")}円</div>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={tenantQuery}
+                  onChange={(e) => setTenantQuery(e.target.value)}
+                  placeholder="会社名で絞り込み"
+                  className="mt-5 w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-green-600"
+                />
+                <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                  {list.map((c) => (
+                    <div key={c.id} className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm font-medium">{c.name}</span>
+                          {c.id === tenants.my_company && <span className="ml-1.5 text-xs text-gray-400">(自社)</span>}
+                        </div>
+                        {c.id !== tenants.my_company && (
+                          <button
+                            onClick={() => removeTenant(c)}
+                            className="text-xs text-red-500 hover:bg-red-50 rounded px-2 py-1 shrink-0"
+                          >削除</button>
+                        )}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        登録 {c.since} ・ {c.user_count} 人 ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
+                        ・ データ {fmtBytes(Number(c.kv_bytes))}
+                        ・ 最終利用 {c.last_active ? String(c.last_active).slice(0, 10) : "—"}
+                      </div>
+                      <div className="mt-1 text-xs">
+                        <span className="text-gray-500">AI利用 — 今月: </span>
+                        <span className="font-medium text-gray-700">{Number(c.m_calls).toLocaleString("ja-JP")} 回 / {fmtCost(aiCost(c.m_in, c.m_out))}</span>
+                        <span className="text-gray-400">(入力 {fmtTok(c.m_in)}・出力 {fmtTok(c.m_out)} トークン)</span>
+                        <span className="text-gray-500"> ・ 累計: </span>
+                        <span className="font-medium text-gray-700">{fmtCost(aiCost(c.t_in, c.t_out))}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {list.length === 0 && (
+                    <div className="px-4 py-6 text-sm text-gray-400 text-center">該当する会社がありません</div>
+                  )}
+                </div>
+                <p className="mt-3 text-xs text-gray-400 leading-relaxed">
+                  単価: 入力 ${rates.in_usd} / 出力 ${rates.out_usd}(100万トークンあたり)・換算 1ドル={rates.usd_jpy}円。
+                  概算です。正確な請求額は Google AI Studio の請求画面をご確認ください。
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       {view === "manage" && (
         <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
           <h1 className="text-xl font-bold mb-1">データ管理</h1>
@@ -3708,41 +3804,17 @@ ${window.location.href.split("#")[0]}
                 >ログアウト</button>
               </div>
 
-              {/* 導入社の管理(サービス運営者のみ) */}
+              {/* 導入社の管理への入口(運営会社の社員のみ) */}
               {account.owner && (
                 <div className="mt-4 pt-4 border-t border-gray-100">
                   <h3 className="text-sm font-medium">導入社の管理 <span className="ml-1 text-xs font-normal text-white bg-gray-700 rounded-full px-2 py-0.5">運営者専用</span></h3>
                   <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                    問屋さんを導入している会社の一覧です。各社のデータの中身は表示されません(件数と容量のみ)。
+                    問屋さんを導入している会社の一覧と、AIの利用料を確認できます。
                   </p>
-                  {tenants && tenants.companies && (
-                    <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
-                      {tenants.companies.map((c) => (
-                        <div key={c.id} className="px-3 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <div className="min-w-0 flex-1">
-                              <span className="text-sm font-medium">{c.name}</span>
-                              {c.id === tenants.my_company && <span className="ml-1.5 text-xs text-gray-400">(自社)</span>}
-                            </div>
-                            {c.id !== tenants.my_company && (
-                              <button
-                                onClick={() => removeTenant(c)}
-                                className="text-xs text-red-500 hover:bg-red-50 rounded px-2 py-1 shrink-0"
-                              >削除</button>
-                            )}
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            登録 {c.since} ・ {c.user_count} 人 ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
-                            ・ データ {fmtBytes(Number(c.kv_bytes))}
-                            ・ 最終利用 {c.last_active ? String(c.last_active).slice(0, 10) : "—"}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {tenants && tenants.companies && tenants.companies.length <= 1 && (
-                    <p className="mt-2 text-xs text-gray-400">まだ他社の導入はありません。</p>
-                  )}
+                  <button
+                    onClick={() => go("tenants")}
+                    className="mt-3 text-sm text-white bg-gray-800 hover:bg-gray-900 rounded-lg px-4 py-2"
+                  >導入社の管理を開く</button>
                 </div>
               )}
 

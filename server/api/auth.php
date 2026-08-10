@@ -8,17 +8,29 @@ require __DIR__ . '/common.php';
 $in = json_input();
 $action = $in['action'] ?? '';
 
-// サービス運営者かどうか(config.php の OWNER_EMAILS にあるメールアドレスのみ)
-function is_owner_email(string $email): bool {
-  if (!defined('OWNER_EMAILS')) return false;
-  $list = array_filter(array_map('trim', explode(',', strtolower(OWNER_EMAILS))));
-  return in_array(strtolower($email), $list, true);
+// 運営会社の判定: config.php の OWNER_EMAILS のユーザーが属する会社を
+// 「運営会社」とみなし、その会社の社員全員が運営者機能を使える
+function owner_company_ids(): array {
+  static $ids = null;
+  if ($ids !== null) return $ids;
+  $ids = [];
+  if (!defined('OWNER_EMAILS')) return $ids;
+  $emails = array_filter(array_map('trim', explode(',', strtolower(OWNER_EMAILS))));
+  if (!$emails) return $ids;
+  $ph = implode(',', array_fill(0, count($emails), '?'));
+  $st = db()->prepare("SELECT DISTINCT company_id FROM users WHERE LOWER(email) IN ($ph)");
+  $st->execute($emails);
+  foreach ($st->fetchAll() as $r) $ids[] = (int)$r['company_id'];
+  return $ids;
+}
+function is_owner_company(int $companyId): bool {
+  return in_array($companyId, owner_company_ids(), true);
 }
 
-// 運営者のログイン確認(運営者でなければ拒否)
+// 運営者のログイン確認(運営会社の社員でなければ拒否)
 function require_owner(): array {
   $auth = require_auth();
-  if (!is_owner_email($auth['email'])) respond(['error' => 'この操作は行えません'], 403);
+  if (!is_owner_company($auth['company_id'])) respond(['error' => 'この操作は行えません'], 403);
   return $auth;
 }
 
@@ -159,7 +171,7 @@ try {
       $token = bin2hex(random_bytes(32));
       $st = db()->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))');
       $st->execute([$token, (int)$u['id']]);
-      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_email($email)]);
+      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_company((int)$u['company_id'])]);
     }
 
     case 'logout': {
@@ -176,7 +188,7 @@ try {
       $st = db()->prepare('SELECT name FROM companies WHERE id = ?');
       $st->execute([$auth['company_id']]);
       $c = $st->fetch();
-      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_email($auth['email'])]);
+      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_company($auth['company_id'])]);
     }
 
     // 同じ会社にユーザーを追加(管理者のみ)
@@ -333,7 +345,7 @@ try {
       $db->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))')
          ->execute([$authToken, $userId]);
       $db->commit();
-      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company'], 'owner' => is_owner_email($s['email'])]);
+      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company'], 'owner' => is_owner_company($companyId)]);
     }
 
     // 新規登録: 確認コードの再送(3回まで)
@@ -357,16 +369,37 @@ try {
     // 運営者専用: 導入している会社の一覧(件数と利用状況のみ。中身は返さない)
     case 'owner_companies': {
       $auth = require_owner();
+      db()->exec("CREATE TABLE IF NOT EXISTS api_usage (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL,
+        provider VARCHAR(20) NOT NULL,
+        model VARCHAR(80) NOT NULL DEFAULT '',
+        prompt_tokens INT NOT NULL DEFAULT 0,
+        output_tokens INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_company_time (company_id, created_at)
+      ) CHARACTER SET utf8mb4");
       $st = db()->query(
-        'SELECT c.id, c.name, DATE(c.created_at) AS since,
+        "SELECT c.id, c.name, DATE(c.created_at) AS since,
           (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
           (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS doc_count,
           (SELECT COALESCE(SUM(d.size), 0) FROM documents d WHERE d.company_id = c.id) AS doc_bytes,
           (SELECT COALESCE(SUM(LENGTH(k.v)), 0) FROM kv_data k WHERE k.company_id = c.id) AS kv_bytes,
-          (SELECT MAX(k.updated_at) FROM kv_data k WHERE k.company_id = c.id) AS last_active
-         FROM companies c ORDER BY c.created_at'
+          (SELECT MAX(k.updated_at) FROM kv_data k WHERE k.company_id = c.id) AS last_active,
+          (SELECT COUNT(*) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_calls,
+          (SELECT COALESCE(SUM(a.prompt_tokens), 0) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_in,
+          (SELECT COALESCE(SUM(a.output_tokens), 0) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_out,
+          (SELECT COALESCE(SUM(a.prompt_tokens), 0) FROM api_usage a WHERE a.company_id = c.id) AS t_in,
+          (SELECT COALESCE(SUM(a.output_tokens), 0) FROM api_usage a WHERE a.company_id = c.id) AS t_out
+         FROM companies c ORDER BY c.created_at"
       );
-      respond(['ok' => true, 'companies' => $st->fetchAll(), 'my_company' => $auth['company_id']]);
+      // 単価(config.php で上書き可能。既定は Gemini 3.5 Flash の公表価格)
+      $rates = [
+        'in_usd' => defined('AI_PRICE_IN_USD') ? (float)AI_PRICE_IN_USD : 1.50,
+        'out_usd' => defined('AI_PRICE_OUT_USD') ? (float)AI_PRICE_OUT_USD : 9.00,
+        'usd_jpy' => defined('USD_JPY') ? (float)USD_JPY : 150.0,
+      ];
+      respond(['ok' => true, 'companies' => $st->fetchAll(), 'my_company' => $auth['company_id'], 'rates' => $rates]);
     }
 
     // 運営者専用: 会社をデータごと削除(自社は不可)
