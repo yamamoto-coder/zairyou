@@ -11,6 +11,24 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+// 設置用ファイルの自己削除(?cleanup=<SETUP_TOKEN>)
+if (isset($_GET['cleanup'])) {
+  if (!file_exists(__DIR__ . '/config.php')) {
+    http_response_code(400); echo json_encode(['error' => 'config.php がありません'], JSON_UNESCAPED_UNICODE); exit;
+  }
+  require_once __DIR__ . '/config.php';
+  if (!hash_equals(SETUP_TOKEN, (string)$_GET['cleanup'])) {
+    http_response_code(403); echo json_encode(['error' => '合言葉が違います'], JSON_UNESCAPED_UNICODE); exit;
+  }
+  $removed = [];
+  foreach ([__DIR__ . '/_boot.php', __DIR__ . '/config.sample.php', dirname(__DIR__) . '/schema.sql'] as $f) {
+    if (file_exists($f) && @unlink($f)) $removed[] = basename($f);
+  }
+  echo json_encode(['ok' => true, 'removed' => $removed, 'next' => 'この install.php も削除します'], JSON_UNESCAPED_UNICODE);
+  @unlink(__FILE__); // 最後に自身を消す
+  exit;
+}
+
 // 設定値の書き込み(POST setconfig)。ファイルマネージャが使えない環境用。
 // 誰でも書き換えられないよう、config.php が未完成のとき(値が空)だけ許可する。
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_GET['setconfig'])) {
