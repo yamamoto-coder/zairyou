@@ -106,12 +106,37 @@ function require_auth(): array {
   // 有効期限を延長(使い続けている限りログインが切れない)
   $up = db()->prepare('UPDATE tokens SET expires_at = DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY) WHERE token = ?');
   $up->execute([$token]);
+  // 利用状況の記録(会社×人×日ごとの操作回数。失敗しても本処理は続ける)
+  try {
+    log_activity((int)$row['company_id'], (int)$row['user_id']);
+  } catch (Throwable $e) { /* 記録は最善努力 */ }
   return [
     'user_id' => (int)$row['user_id'],
     'company_id' => (int)$row['company_id'],
     'email' => $row['email'],
     'role' => $row['role'],
   ];
+}
+
+// 「きちんと使われているか」を見るための操作記録
+function log_activity(int $companyId, int $userId): void {
+  $sql = 'INSERT INTO activity_log (company_id, user_id, day, actions, last_seen)
+          VALUES (?, ?, CURDATE(), 1, NOW())
+          ON DUPLICATE KEY UPDATE actions = actions + 1, last_seen = NOW()';
+  try {
+    db()->prepare($sql)->execute([$companyId, $userId]);
+  } catch (Throwable $e) {
+    // 初回だけ表を作ってやり直す
+    db()->exec("CREATE TABLE IF NOT EXISTS activity_log (
+      company_id INT NOT NULL,
+      user_id INT NOT NULL,
+      day DATE NOT NULL,
+      actions INT NOT NULL DEFAULT 0,
+      last_seen DATETIME,
+      PRIMARY KEY (company_id, user_id, day)
+    ) CHARACTER SET utf8mb4");
+    db()->prepare($sql)->execute([$companyId, $userId]);
+  }
 }
 
 function client_ip(): string {

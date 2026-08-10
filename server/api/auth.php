@@ -46,9 +46,13 @@ function ensure_signup_table(): void {
     attempts INT NOT NULL DEFAULT 0,
     resends INT NOT NULL DEFAULT 0,
     ip VARCHAR(45) NOT NULL DEFAULT '',
+    source TEXT,
     expires_at DATETIME NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+  // 既存の表にも流入経路の列を足す(MariaDB は IF NOT EXISTS が使える)
+  try { db()->exec("ALTER TABLE signups ADD COLUMN IF NOT EXISTS source TEXT"); } catch (Throwable $e) {}
+  try { db()->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS source TEXT"); } catch (Throwable $e) {}
 }
 
 // 確認コードのメールを送る(ブランドデザインのHTML + 文字だけの控えを同封)
@@ -298,9 +302,18 @@ try {
       $db->prepare('DELETE FROM signups WHERE email = ?')->execute([$email]);
       $token = bin2hex(random_bytes(32));
       $code = sprintf('%06d', random_int(0, 999999));
-      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
-         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip()]);
+      // 流入経路(初回アクセス時のリンク元やURLパラメータ)。無くてもよい
+      $source = '';
+      if (isset($in['source']) && is_array($in['source'])) {
+        $src = [];
+        foreach (['ref', 'utm_source', 'utm_medium', 'utm_campaign', 'at'] as $k) {
+          if (!empty($in['source'][$k])) $src[$k] = mb_substr((string)$in['source'][$k], 0, 300);
+        }
+        if ($src) $source = json_encode($src, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      }
+      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, source, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
+         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip(), $source]);
       if (!send_signup_mail($email, $code)) {
         respond(['error' => '確認メールを送信できませんでした。メールアドレスをご確認ください'], 500);
       }
@@ -335,7 +348,7 @@ try {
       $st->execute([$s['email']]);
       if ($st->fetch()) respond(['error' => 'このメールアドレスは登録済みです。ログインしてください'], 409);
       $db->beginTransaction();
-      $db->prepare('INSERT INTO companies (name) VALUES (?)')->execute([$s['company']]);
+      $db->prepare('INSERT INTO companies (name, source) VALUES (?, ?)')->execute([$s['company'], $s['source'] ?? null]);
       $companyId = (int)$db->lastInsertId();
       $db->prepare('INSERT INTO users (company_id, email, pass_hash, role) VALUES (?, ?, ?, "admin")')
          ->execute([$companyId, $s['email'], $s['pass_hash']]);
@@ -379,13 +392,25 @@ try {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_company_time (company_id, created_at)
       ) CHARACTER SET utf8mb4");
+      db()->exec("CREATE TABLE IF NOT EXISTS activity_log (
+        company_id INT NOT NULL,
+        user_id INT NOT NULL,
+        day DATE NOT NULL,
+        actions INT NOT NULL DEFAULT 0,
+        last_seen DATETIME,
+        PRIMARY KEY (company_id, user_id, day)
+      ) CHARACTER SET utf8mb4");
+      ensure_signup_table(); // companies.source 列の用意も兼ねる
       $st = db()->query(
-        "SELECT c.id, c.name, DATE(c.created_at) AS since,
+        "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source,
           (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
           (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS doc_count,
           (SELECT COALESCE(SUM(d.size), 0) FROM documents d WHERE d.company_id = c.id) AS doc_bytes,
           (SELECT COALESCE(SUM(LENGTH(k.v)), 0) FROM kv_data k WHERE k.company_id = c.id) AS kv_bytes,
-          (SELECT MAX(k.updated_at) FROM kv_data k WHERE k.company_id = c.id) AS last_active,
+          (SELECT MAX(g.last_seen) FROM activity_log g WHERE g.company_id = c.id) AS last_seen,
+          (SELECT COALESCE(SUM(g.actions), 0) FROM activity_log g WHERE g.company_id = c.id AND g.day >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_actions,
+          (SELECT COUNT(DISTINCT g.user_id) FROM activity_log g WHERE g.company_id = c.id AND g.day >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_active_users,
+          (SELECT COUNT(DISTINCT g.day) FROM activity_log g WHERE g.company_id = c.id AND g.day >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)) AS d7_days,
           (SELECT COUNT(*) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_calls,
           (SELECT COALESCE(SUM(a.prompt_tokens), 0) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_in,
           (SELECT COALESCE(SUM(a.output_tokens), 0) FROM api_usage a WHERE a.company_id = c.id AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_out,
