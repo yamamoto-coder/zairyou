@@ -1,3 +1,11 @@
+# Authorization ヘッダーを PHP に渡す(サーバーによっては削られるため)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTP:Authorization} ^(.+)$
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+</IfModule>
+SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+
 # 設定ファイル(秘密情報入り)への直接アクセスを禁止
 <Files "config.php">
   Require all denied

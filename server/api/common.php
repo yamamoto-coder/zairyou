@@ -70,14 +70,20 @@ function json_input(): array {
 }
 
 function bearer_token(): string {
-  $h = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  // サーバーによって Authorization ヘッダーの渡り方が異なるため順に探す
+  $h = $_SERVER['HTTP_AUTHORIZATION']
+    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+    ?? $_SERVER['PHP_AUTH_DIGEST']
+    ?? '';
   if ($h === '' && function_exists('apache_request_headers')) {
-    $headers = apache_request_headers();
-    foreach ($headers as $k => $v) {
+    foreach (apache_request_headers() as $k => $v) {
       if (strtolower($k) === 'authorization') { $h = $v; break; }
     }
   }
   if (preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $h, $m)) return strtolower($m[1]);
+  // 最後の手段: クエリ文字列で受け取る(ヘッダーが通らない環境向け)
+  $q = $_GET['_t'] ?? '';
+  if (is_string($q) && preg_match('/^[a-f0-9]{64}$/i', $q)) return strtolower($q);
   return '';
 }
 
