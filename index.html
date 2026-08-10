@@ -3091,7 +3091,6 @@ ${window.location.href.split("#")[0]}
             if (!list.length) {
               return <div className="mt-8 text-sm text-gray-400">この年のデータはありません。</div>;
             }
-            const maxTotal = Math.max(...list.map((m) => m.total), 1);
             const sum = list.reduce((s, m) => s + m.total, 0);
             const fmtY = (v) => "¥" + Math.round(v).toLocaleString("ja-JP");
             const top = (mp, n) => [...mp.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
@@ -3113,32 +3112,12 @@ ${window.location.href.split("#")[0]}
                           <span className="text-sm font-medium shrink-0 w-24">
                             {m.month.slice(0, 4)}年{Number(m.month.slice(5, 7))}月
                           </span>
-                          {(() => {
-                            // 金額はグラフの上に直接表示する。棒が十分長い月は
-                            // 棒の中に白文字、短い月は棒のすぐ右に置く
-                            const pct = Math.max((m.total / maxTotal) * 100, 2);
-                            const inside = pct > 55;
-                            return (
-                              <div className="flex-1 relative h-6 bg-gray-100 rounded-full min-w-0">
-                                <div
-                                  className="h-full bg-green-600 rounded-full"
-                                  style={{ width: pct + "%" }}
-                                />
-                                <span
-                                  className={
-                                    "absolute top-0 h-full flex items-center text-xs font-bold whitespace-nowrap " +
-                                    (inside ? "text-white" : "text-gray-800")
-                                  }
-                                  style={inside ? { right: 100 - pct + "%", paddingRight: "0.6rem" } : { left: pct + "%", paddingLeft: "0.5rem" }}
-                                >{fmtY(m.total)}</span>
-                              </div>
-                            );
-                          })()}
+                          <span className="text-xs text-gray-400 min-w-0 truncate">
+                            {m.count} 明細
+                            {m.noAmount > 0 && <>(金額不明 {m.noAmount} 件を除く)</>}
+                          </span>
+                          <span className="ml-auto text-base font-bold shrink-0">{fmtY(m.total)}</span>
                           <span className="text-gray-400 text-xs shrink-0">{costOpen === m.month ? "▲" : "▼"}</span>
-                        </div>
-                        <div className="mt-1 text-xs text-gray-400 pl-0.5">
-                          {m.count} 明細
-                          {m.noAmount > 0 && <>(金額不明 {m.noAmount} 件は合計に含まれていません)</>}
                         </div>
                       </button>
                       {costOpen === m.month && (
