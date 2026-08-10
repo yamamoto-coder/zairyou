@@ -3636,11 +3636,25 @@ ${window.location.href.split("#")[0]}
                     <div className="px-4 py-6 text-sm text-gray-400 text-center">該当する会社がありません</div>
                   )}
                 </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <a
+                    href="https://aistudio.google.com/usage"
+                    target="_blank"
+                    rel="noopener"
+                    className="text-sm text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg px-4 py-2"
+                  >Google AI Studio で実際の利用状況を見る ↗</a>
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noopener"
+                    className="text-sm text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg px-4 py-2"
+                  >APIキーの管理 ↗</a>
+                </div>
                 <p className="mt-3 text-xs text-gray-400 leading-relaxed">
                   単価(100万トークンあたり): 軽量モデル 入力${rates.lite_in_usd}/出力${rates.lite_out_usd}、
                   通常モデル 入力${rates.in_usd}/出力${rates.out_usd}・換算 1ドル={rates.usd_jpy}円。
                   有料契約した場合の概算です。無料枠のキーで運用中の実支払いは0円で、
-                  正確な請求額は Google AI Studio の請求画面をご確認ください。
+                  正確な請求額は上の Google AI Studio でご確認ください。
                 </p>
               </>
             );
