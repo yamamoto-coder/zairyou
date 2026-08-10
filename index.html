@@ -10,8 +10,16 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="問屋さん" />
-<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="icon" type="image/png" href="icon-192.png" />
+<script>
+  // ホーム画面に追加してアプリとして使えるようにする(PWA)
+  if ("serviceWorker" in navigator && location.protocol === "https:") {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function () {});
+    });
+  }
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -43,10 +51,11 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 // ============================================================
 // 同じサーバー上に置かれている場合は相対パス、それ以外(GitHub Pages・
 // ローカル確認)からは絶対URLで同じサーバーのAPIに繋ぐ
+const SELF_HOSTS = ["tonyasan.jp", "www.tonyasan.jp", "tonya.craftfile.jp"];
 const API_BASE =
-  location.hostname === "tonya.craftfile.jp"
+  SELF_HOSTS.indexOf(location.hostname) >= 0
     ? "api/"
-    : "https://tonya.craftfile.jp/api/";
+    : "https://tonyasan.jp/api/";
 const TOKEN_KEY = "shizai-auth-token";
 
 const auth = {
