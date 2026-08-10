@@ -119,6 +119,49 @@ try {
       respond(['ok' => true]);
     }
 
+    // 同じ会社の社員一覧(管理者のみ)
+    case 'list_users': {
+      $auth = require_auth();
+      if ($auth['role'] !== 'admin') respond(['error' => '管理者のみ操作できます'], 403);
+      $st = db()->prepare('SELECT id, email, role, DATE(created_at) AS added_on FROM users WHERE company_id = ? ORDER BY created_at');
+      $st->execute([$auth['company_id']]);
+      respond(['ok' => true, 'users' => $st->fetchAll(), 'me' => $auth['user_id']]);
+    }
+
+    // 社員の削除(管理者のみ・自分自身は不可)
+    case 'remove_user': {
+      $auth = require_auth();
+      if ($auth['role'] !== 'admin') respond(['error' => '管理者のみ操作できます'], 403);
+      $targetId = (int)($in['user_id'] ?? 0);
+      if ($targetId === $auth['user_id']) respond(['error' => '自分自身は削除できません'], 400);
+      $db = db();
+      $st = $db->prepare('SELECT id FROM users WHERE id = ? AND company_id = ?');
+      $st->execute([$targetId, $auth['company_id']]);
+      if (!$st->fetch()) respond(['error' => 'その社員が見つかりません'], 404);
+      $db->prepare('DELETE FROM tokens WHERE user_id = ?')->execute([$targetId]);
+      $db->prepare('DELETE FROM users WHERE id = ?')->execute([$targetId]);
+      respond(['ok' => true]);
+    }
+
+    // 社員のパスワード再設定(管理者のみ・他人のみ。自分は change_password を使う)
+    case 'reset_password': {
+      $auth = require_auth();
+      if ($auth['role'] !== 'admin') respond(['error' => '管理者のみ操作できます'], 403);
+      $targetId = (int)($in['user_id'] ?? 0);
+      $new = (string)($in['new'] ?? '');
+      if ($targetId === $auth['user_id']) respond(['error' => 'ご自身のパスワードは「パスワード変更」から行ってください'], 400);
+      if (strlen($new) < 8) respond(['error' => '新しいパスワードは8文字以上にしてください'], 400);
+      $db = db();
+      $st = $db->prepare('SELECT id FROM users WHERE id = ? AND company_id = ?');
+      $st->execute([$targetId, $auth['company_id']]);
+      if (!$st->fetch()) respond(['error' => 'その社員が見つかりません'], 404);
+      $db->prepare('UPDATE users SET pass_hash = ? WHERE id = ?')
+         ->execute([password_hash($new, PASSWORD_DEFAULT), $targetId]);
+      // 本人の既存ログインを無効化(新パスワードで入り直してもらう)
+      $db->prepare('DELETE FROM tokens WHERE user_id = ?')->execute([$targetId]);
+      respond(['ok' => true]);
+    }
+
     case 'change_password': {
       $auth = require_auth();
       $current = (string)($in['current'] ?? '');

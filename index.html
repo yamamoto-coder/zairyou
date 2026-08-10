@@ -1601,6 +1601,13 @@ function ShizaiSearch() {
   const [authReady, setAuthReady] = useState(!API_BASE);
   const [legacy, setLegacy] = useState(null); // このパソコンに残る旧データ {kv, docs, total}
   const [migrating, setMigrating] = useState(""); // 引き継ぎ中の進捗表示
+  // 社員の管理(管理者のみ)
+  const [staff, setStaff] = useState(null); // {users: [...], me: 自分のID}
+  const [nsEmail, setNsEmail] = useState(""); // 追加フォーム
+  const [nsPass, setNsPass] = useState("");
+  const [invite, setInvite] = useState(null); // 発行直後の案内 {email, pass, kind}
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [staffBusy, setStaffBusy] = useState(false);
   const [view, setView] = useState("home"); // home | results | detail | manage | supplier
   const [query, setQuery] = useState("");
   const [committed, setCommitted] = useState("");
@@ -1683,6 +1690,91 @@ function ShizaiSearch() {
     if (!account) { setLegacy(null); return; }
     legacyCounts().then(setLegacy).catch(() => setLegacy(null));
   }, [account]);
+
+  // ---------- 社員の管理(管理者のみ) ----------
+  useEffect(() => {
+    if (view !== "manage" || !account || account.role !== "admin" || !auth.on) return;
+    api("auth.php", { method: "POST", json: { action: "list_users" } })
+      .then(setStaff)
+      .catch(() => setStaff(null));
+  }, [view, account]);
+
+  // 覚えやすいパスワードを自動で作る(例: hinoki-4827)
+  const genStaffPass = () => {
+    const words = ["sakura", "hinoki", "kaede", "momiji", "tsubaki", "sugi", "matsu", "keyaki"];
+    return words[Math.floor(Math.random() * words.length)] + "-" + Math.floor(1000 + Math.random() * 9000);
+  };
+
+  // 本人に送る案内文(URL・メール・パスワード入り)
+  const staffInviteText = (email, pass) =>
+    "「問屋さん」のアカウントをお送りします。\n\n" +
+    "① 下のリンクを開く\nhttps://tonyasan.jp/\n\n" +
+    "② ログイン画面に入力\n" +
+    "メールアドレス: " + email + "\n" +
+    "パスワード: " + pass + "\n\n" +
+    "スマホの方は、開いたあと「ホーム画面に追加」をするとアプリとして使えて便利です。";
+
+  const copyInvite = () => {
+    if (!invite) return;
+    const text = staffInviteText(invite.email, invite.pass);
+    const done = () => setInviteCopied(true);
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch {}
+      ta.remove();
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { fallback(); done(); });
+    } else { fallback(); done(); }
+  };
+
+  const reloadStaff = async () => {
+    try { setStaff(await api("auth.php", { method: "POST", json: { action: "list_users" } })); } catch {}
+  };
+
+  const addStaff = async () => {
+    const em = nsEmail.trim().toLowerCase();
+    if (!em || nsPass.length < 8) return;
+    setStaffBusy(true);
+    try {
+      await api("auth.php", { method: "POST", json: { action: "add_user", email: em, password: nsPass } });
+      setInvite({ email: em, pass: nsPass, kind: "new" });
+      setInviteCopied(false);
+      setNsEmail("");
+      setNsPass("");
+      await reloadStaff();
+    } catch (e) {
+      window.alert("追加できませんでした: " + ((e && e.message) || ""));
+    }
+    setStaffBusy(false);
+  };
+
+  const removeStaff = async (u) => {
+    if (!window.confirm("「" + u.email + "」のアカウントを削除しますか?\n\nこの社員はログインできなくなります。\n(会社に貯めたデータは消えません)")) return;
+    try {
+      await api("auth.php", { method: "POST", json: { action: "remove_user", user_id: u.id } });
+      await reloadStaff();
+    } catch (e) {
+      window.alert("削除できませんでした: " + ((e && e.message) || ""));
+    }
+  };
+
+  const resetStaff = async (u) => {
+    if (!window.confirm("「" + u.email + "」の新しいパスワードを発行しますか?\n\n今のパスワードは使えなくなり、本人は入り直しが必要になります。")) return;
+    const pass = genStaffPass();
+    try {
+      await api("auth.php", { method: "POST", json: { action: "reset_password", user_id: u.id, new: pass } });
+      setInvite({ email: u.email, pass, kind: "reset" });
+      setInviteCopied(false);
+    } catch (e) {
+      window.alert("再発行できませんでした: " + ((e && e.message) || ""));
+    }
+  };
 
   const logout = useCallback(async () => {
     try { await api("auth.php", { method: "POST", json: { action: "logout" } }); } catch {}
@@ -3588,6 +3680,96 @@ ${window.location.href.split("#")[0]}
                   className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-4 py-1.5"
                 >ログアウト</button>
               </div>
+
+              {/* 社員の管理(管理者のみ) */}
+              {account.role === "admin" && (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <h3 className="text-sm font-medium">社員の管理</h3>
+                  <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+                    社員ごとにアカウントを発行できます。発行すると「本人に送る案内文」が
+                    作られるので、それを LINE やメールで送るだけで使い始められます。
+                  </p>
+
+                  {staff && staff.users && staff.users.length > 0 && (
+                    <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                      {staff.users.map((u) => (
+                        <div key={u.id} className="flex items-center gap-2 px-3 py-2.5 text-sm">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate">{u.email}</div>
+                            <div className="text-xs text-gray-400">
+                              {u.role === "admin" ? "管理者" : "一般"}
+                              {u.id === staff.me && " (自分)"}
+                            </div>
+                          </div>
+                          {u.id !== staff.me && (
+                            <>
+                              <button
+                                onClick={() => resetStaff(u)}
+                                title="パスワードを忘れた社員に、新しいパスワードを発行します"
+                                className="text-xs text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-2 py-1 shrink-0"
+                              >パスワード再発行</button>
+                              <button
+                                onClick={() => removeStaff(u)}
+                                className="text-xs text-red-500 hover:bg-red-50 rounded px-2 py-1 shrink-0"
+                              >削除</button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-3 bg-gray-50 rounded-xl p-3">
+                    <div className="text-xs font-medium text-gray-600">社員を追加</div>
+                    <input
+                      type="email"
+                      value={nsEmail}
+                      onChange={(e) => setNsEmail(e.target.value)}
+                      placeholder="社員のメールアドレス"
+                      className="mt-2 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                    />
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        type="text"
+                        value={nsPass}
+                        onChange={(e) => setNsPass(e.target.value)}
+                        placeholder="パスワード(8文字以上)"
+                        className="flex-1 min-w-0 w-0 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                      />
+                      <button
+                        onClick={() => setNsPass(genStaffPass())}
+                        title="覚えやすいパスワードを自動で作ります"
+                        className="text-xs text-green-800 border border-green-200 hover:bg-green-50 rounded-lg px-3 shrink-0"
+                      >自動で作る</button>
+                    </div>
+                    <button
+                      onClick={addStaff}
+                      disabled={staffBusy || !nsEmail.trim() || nsPass.length < 8}
+                      className="mt-2 w-full text-sm text-white bg-green-700 hover:bg-green-800 disabled:bg-gray-300 rounded-lg py-2"
+                    >{staffBusy ? "追加中…" : "この内容で追加する"}</button>
+                  </div>
+
+                  {invite && (
+                    <div className="mt-3 border-2 border-green-200 bg-green-50 rounded-xl p-3">
+                      <div className="text-sm font-medium text-green-900">
+                        {invite.kind === "reset" ? "✓ 新しいパスワードを発行しました" : "✓ アカウントを発行しました"}
+                      </div>
+                      <p className="text-xs text-green-800 mt-1">
+                        下のボタンで案内文をコピーして、本人に LINE やメールで送ってください。
+                      </p>
+                      <pre className="mt-2 text-xs bg-white border border-green-100 rounded-lg p-2.5 whitespace-pre-wrap leading-relaxed font-sans">{staffInviteText(invite.email, invite.pass)}</pre>
+                      <button
+                        onClick={copyInvite}
+                        className="mt-2 w-full text-sm text-white bg-green-700 hover:bg-green-800 rounded-lg py-2"
+                      >{inviteCopied ? "✓ コピーしました — LINE などに貼り付けて送ってください" : "案内文をコピーする"}</button>
+                      <button
+                        onClick={() => { if (window.confirm("案内文を閉じますか?\n(パスワードは後から見られません。忘れた場合は「パスワード再発行」でまた作れます)")) setInvite(null); }}
+                        className="mt-1 w-full text-xs text-gray-500 py-1"
+                      >閉じる</button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 以前のデータの引き継ぎ */}
               <div className="mt-4 pt-4 border-t border-gray-100">
