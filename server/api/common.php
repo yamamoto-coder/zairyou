@@ -16,10 +16,14 @@ if (!file_exists(__DIR__ . '/config.php')) {
 require __DIR__ . '/config.php';
 
 // ---- CORS(許可した公開元だけがブラウザから呼べる) ----
+// ALLOWED_ORIGIN はカンマ区切りで複数指定できる(旧URLからのデータ引き継ぎ用)
+function allowed_origins(): array {
+  return array_values(array_filter(array_map('trim', explode(',', ALLOWED_ORIGIN))));
+}
 function send_cors_headers(): void {
   $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-  if ($origin === ALLOWED_ORIGIN) {
-    header('Access-Control-Allow-Origin: ' . ALLOWED_ORIGIN);
+  if ($origin !== '' && in_array($origin, allowed_origins(), true)) {
+    header('Access-Control-Allow-Origin: ' . $origin);
     header('Vary: Origin');
     header('Access-Control-Allow-Headers: Authorization, Content-Type');
     header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
