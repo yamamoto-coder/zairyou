@@ -25,19 +25,83 @@ function ensure_signup_table(): void {
   ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
 }
 
-// 確認コードのメールを送る
+// 確認コードのメールを送る(ブランドデザインのHTML + 文字だけの控えを同封)
 function send_signup_mail(string $email, string $code): bool {
-  mb_language('ja');
-  mb_internal_encoding('UTF-8');
-  $subject = '【問屋さん】メールアドレス確認コード';
-  $body = "問屋さんへの新規登録ありがとうございます。\n\n"
+  $subject = mb_encode_mimeheader('【問屋さん】メールアドレス確認コード', 'UTF-8', 'B');
+  $from = '=?UTF-8?B?' . base64_encode('問屋さん') . '?= <noreply@tonyasan.jp>';
+
+  // HTMLが表示できない環境向けの控え(文字だけ)
+  $text = "「問屋さん」への新規登録ありがとうございます。\n\n"
         . "確認コード: {$code}\n\n"
-        . "登録画面にこの6桁のコードを入力してください。\n"
+        . "登録画面に、この6桁の確認コードをご入力ください。\n"
         . "コードの有効期限は20分です。\n\n"
-        . "※心当たりがない場合は、このメールは破棄してください。\n\n"
-        . "問屋さん — 建築資材検索システム\nhttps://tonyasan.jp/";
-  return @mb_send_mail($email, $subject, $body,
-    "From: noreply@tonyasan.jp\r\nReply-To: noreply@tonyasan.jp");
+        . "お心当たりがない場合は、このメールを破棄してください。\n\n"
+        . "――――――――――――――――\n"
+        . "問屋さん — 建築資材検索システム\n"
+        . "https://tonyasan.jp/\n"
+        . "※このメールは送信専用です。ご返信いただいてもお答えできません。";
+
+  // 本文(主要なメールソフトで崩れないテーブル構成・インラインCSS)
+  $tile = 'width:34px;height:34px;text-align:center;vertical-align:middle;'
+        . 'color:#ffffff;font-family:sans-serif;font-size:19px;font-weight:bold;line-height:34px;';
+  $html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"></head>'
+    . '<body style="margin:0;padding:0;background-color:#f4f5f7;">'
+    . '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f5f7;padding:32px 12px;"><tr><td align="center">'
+    . '<table width="480" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;width:100%;background-color:#ffffff;border-radius:14px;border:1px solid #e5e7eb;">'
+    // ロゴ(4色タイル)
+    . '<tr><td align="center" style="padding:36px 24px 0;">'
+    . '<table cellpadding="0" cellspacing="0" border="0"><tr>'
+    . '<td style="' . $tile . 'background-color:#4285F4;border-radius:8px 0 0 0;">&#21839;</td>'
+    . '<td style="' . $tile . 'background-color:#EA4335;border-radius:0 8px 0 0;">&#23627;</td>'
+    . '</tr><tr>'
+    . '<td style="' . $tile . 'background-color:#FBBC05;border-radius:0 0 0 8px;">&#12373;</td>'
+    . '<td style="' . $tile . 'background-color:#34A853;border-radius:0 0 8px 0;">&#12435;</td>'
+    . '</tr></table>'
+    . '<div style="margin-top:12px;font-family:sans-serif;font-size:12px;letter-spacing:4px;color:#9ca3af;">TONYASAN</div>'
+    . '</td></tr>'
+    // 見出し・本文
+    . '<tr><td style="padding:26px 32px 0;font-family:sans-serif;">'
+    . '<div style="font-size:18px;font-weight:bold;color:#111827;text-align:center;">メールアドレスの確認</div>'
+    . '<p style="margin:18px 0 0;font-size:14px;line-height:1.9;color:#374151;">'
+    . '「問屋さん」への新規登録ありがとうございます。<br>'
+    . '下の6桁の確認コードを、登録画面にご入力ください。</p>'
+    . '</td></tr>'
+    // 確認コード
+    . '<tr><td align="center" style="padding:22px 32px 0;">'
+    . '<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+    . '<td align="center" style="background-color:#f0fdf4;border:2px solid #bbf7d0;border-radius:12px;padding:18px 10px;">'
+    . '<div style="font-family:sans-serif;font-size:34px;font-weight:bold;letter-spacing:10px;color:#15803d;">' . htmlspecialchars($code) . '</div>'
+    . '</td></tr></table>'
+    . '<div style="margin-top:10px;font-family:sans-serif;font-size:12px;color:#6b7280;">このコードの有効期限は20分です</div>'
+    . '</td></tr>'
+    // 注意書き
+    . '<tr><td style="padding:24px 32px 32px;font-family:sans-serif;">'
+    . '<p style="margin:0;padding-top:18px;border-top:1px solid #f3f4f6;font-size:12px;line-height:1.9;color:#9ca3af;">'
+    . 'お心当たりがない場合は、このメールを破棄してください。どなたかがメールアドレスを誤って入力した可能性があります。</p>'
+    . '</td></tr>'
+    . '</table>'
+    // フッター
+    . '<table width="480" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;width:100%;"><tr>'
+    . '<td align="center" style="padding:20px 24px;font-family:sans-serif;font-size:12px;line-height:1.9;color:#9ca3af;">'
+    . '問屋さん — 建築資材検索システム<br>'
+    . '<a href="https://tonyasan.jp/" style="color:#15803d;text-decoration:none;">https://tonyasan.jp/</a><br>'
+    . '※このメールは送信専用です。ご返信いただいてもお答えできません。'
+    . '</td></tr></table>'
+    . '</td></tr></table></body></html>';
+
+  $boundary = 'b' . bin2hex(random_bytes(12));
+  $headers = "From: {$from}\r\n"
+    . "Reply-To: noreply@tonyasan.jp\r\n"
+    . "MIME-Version: 1.0\r\n"
+    . "Content-Type: multipart/alternative; boundary=\"{$boundary}\"";
+  $body = "--{$boundary}\r\n"
+    . "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+    . chunk_split(base64_encode($text))
+    . "--{$boundary}\r\n"
+    . "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+    . chunk_split(base64_encode($html))
+    . "--{$boundary}--";
+  return @mail($email, $subject, $body, $headers);
 }
 
 try {
