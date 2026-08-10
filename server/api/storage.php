@@ -13,6 +13,37 @@ $auth = require_auth();
 $cid = $auth['company_id'];
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+// 【一時】アプリ本体を自社ドメインの公開領域へ配置する。管理者のみ。
+// 配置が済んだらこのブロックは削除する。
+if (isset($_GET['deploy'])) {
+  if ($auth['role'] !== 'admin') respond(['error' => '管理者のみ'], 403);
+  $base = 'https://raw.githubusercontent.com/yamamoto-coder/zairyou/main/';
+  $root = dirname(__DIR__);
+  $log = [];
+  foreach (['index.html', 'manifest.json', 'icon-192.png'] as $f) {
+    $url = $base . $f . '?t=' . time();
+    $data = @file_get_contents($url);
+    if (($data === false || $data === '') && function_exists('curl_init')) {
+      $ch = curl_init($url);
+      curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60, CURLOPT_FOLLOWLOCATION => true]);
+      $data = curl_exec($ch);
+      curl_close($ch);
+    }
+    if ($data === false || $data === '') { $log[] = "NG $f"; continue; }
+    $log[] = (@file_put_contents($root . '/' . $f, $data) !== false)
+      ? "OK $f (" . strlen($data) . ")" : "NG $f (書込失敗)";
+  }
+  // 同一ドメイン運用に合わせて CORS の許可元を更新
+  $cfgPath = __DIR__ . '/config.php';
+  $cfg = @file_get_contents($cfgPath);
+  if ($cfg !== false) {
+    $new = preg_replace("/define\('ALLOWED_ORIGIN',\s*'[^']*'\)/", "define('ALLOWED_ORIGIN', 'https://tonya.craftfile.jp')", $cfg, 1, $c);
+    if ($c > 0) { @file_put_contents($cfgPath, $new); $log[] = "OK ALLOWED_ORIGIN"; }
+  }
+  if (file_exists($root . '/default_page.png')) { @unlink($root . '/default_page.png'); $log[] = "OK 初期画像削除"; }
+  respond(['ok' => true, 'log' => $log]);
+}
+
 // キーは英数と記号少々のみ許可(アプリが使う shizai-... 形式)
 function valid_key(string $k): bool {
   return $k !== '' && strlen($k) <= 100 && preg_match('/^[a-zA-Z0-9._:\-]+$/', $k) === 1;
