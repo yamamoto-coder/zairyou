@@ -1601,6 +1601,8 @@ function ShizaiSearch() {
   const [authReady, setAuthReady] = useState(!API_BASE);
   const [legacy, setLegacy] = useState(null); // このパソコンに残る旧データ {kv, docs, total}
   const [migrating, setMigrating] = useState(""); // 引き継ぎ中の進捗表示
+  // 導入社の管理(サービス運営者のみ)
+  const [tenants, setTenants] = useState(null); // {companies: [...], my_company}
   // 社員の管理(管理者のみ)
   const [staff, setStaff] = useState(null); // {users: [...], me: 自分のID}
   const [nsEmail, setNsEmail] = useState(""); // 追加フォーム
@@ -1677,7 +1679,7 @@ function ShizaiSearch() {
       if (!auth.token) { setAuthReady(true); return; }
       try {
         const me = await api("auth.php", { method: "POST", json: { action: "me" } });
-        setAccount({ email: me.email, role: me.role, company: me.company });
+        setAccount({ email: me.email, role: me.role, company: me.company, owner: !!me.owner });
       } catch {
         auth.token = "";
       }
@@ -1698,6 +1700,31 @@ function ShizaiSearch() {
       .then(setStaff)
       .catch(() => setStaff(null));
   }, [view, account]);
+
+  // ---------- 導入社の管理(サービス運営者のみ) ----------
+  useEffect(() => {
+    if (view !== "manage" || !account || !account.owner || !auth.on) return;
+    api("auth.php", { method: "POST", json: { action: "owner_companies" } })
+      .then(setTenants)
+      .catch(() => setTenants(null));
+  }, [view, account]);
+
+  const fmtBytes = (b) => {
+    if (!b) return "0";
+    if (b < 1024 * 1024) return Math.max(1, Math.round(b / 1024)) + " KB";
+    return (b / (1024 * 1024)).toFixed(1) + " MB";
+  };
+
+  const removeTenant = async (c) => {
+    if (!window.confirm("導入社「" + c.name + "」を削除しますか?\n\nこの会社のアカウント・データ・書類がすべて消えます。\nこの操作は元に戻せません。")) return;
+    if (!window.confirm("本当によろしいですか?\n「" + c.name + "」のデータは完全に削除されます。")) return;
+    try {
+      await api("auth.php", { method: "POST", json: { action: "owner_remove_company", company_id: c.id } });
+      setTenants(await api("auth.php", { method: "POST", json: { action: "owner_companies" } }));
+    } catch (e) {
+      window.alert("削除できませんでした: " + ((e && e.message) || ""));
+    }
+  };
 
   // 覚えやすいパスワードを自動で作る(例: hinoki-4827)
   const genStaffPass = () => {
@@ -2632,7 +2659,7 @@ ${window.location.href.split("#")[0]}
     }
     return (
       <div className="min-h-screen bg-white text-gray-800">
-        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company })} />
+        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company, owner: !!r.owner })} />
       </div>
     );
   }
@@ -3680,6 +3707,44 @@ ${window.location.href.split("#")[0]}
                   className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-4 py-1.5"
                 >ログアウト</button>
               </div>
+
+              {/* 導入社の管理(サービス運営者のみ) */}
+              {account.owner && (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <h3 className="text-sm font-medium">導入社の管理 <span className="ml-1 text-xs font-normal text-white bg-gray-700 rounded-full px-2 py-0.5">運営者専用</span></h3>
+                  <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+                    問屋さんを導入している会社の一覧です。各社のデータの中身は表示されません(件数と容量のみ)。
+                  </p>
+                  {tenants && tenants.companies && (
+                    <div className="mt-3 border border-gray-200 rounded-xl divide-y divide-gray-100">
+                      {tenants.companies.map((c) => (
+                        <div key={c.id} className="px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <div className="min-w-0 flex-1">
+                              <span className="text-sm font-medium">{c.name}</span>
+                              {c.id === tenants.my_company && <span className="ml-1.5 text-xs text-gray-400">(自社)</span>}
+                            </div>
+                            {c.id !== tenants.my_company && (
+                              <button
+                                onClick={() => removeTenant(c)}
+                                className="text-xs text-red-500 hover:bg-red-50 rounded px-2 py-1 shrink-0"
+                              >削除</button>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            登録 {c.since} ・ {c.user_count} 人 ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
+                            ・ データ {fmtBytes(Number(c.kv_bytes))}
+                            ・ 最終利用 {c.last_active ? String(c.last_active).slice(0, 10) : "—"}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {tenants && tenants.companies && tenants.companies.length <= 1 && (
+                    <p className="mt-2 text-xs text-gray-400">まだ他社の導入はありません。</p>
+                  )}
+                </div>
+              )}
 
               {/* 社員の管理(管理者のみ) */}
               {account.role === "admin" && (

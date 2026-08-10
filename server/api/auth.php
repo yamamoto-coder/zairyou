@@ -8,6 +8,20 @@ require __DIR__ . '/common.php';
 $in = json_input();
 $action = $in['action'] ?? '';
 
+// サービス運営者かどうか(config.php の OWNER_EMAILS にあるメールアドレスのみ)
+function is_owner_email(string $email): bool {
+  if (!defined('OWNER_EMAILS')) return false;
+  $list = array_filter(array_map('trim', explode(',', strtolower(OWNER_EMAILS))));
+  return in_array(strtolower($email), $list, true);
+}
+
+// 運営者のログイン確認(運営者でなければ拒否)
+function require_owner(): array {
+  $auth = require_auth();
+  if (!is_owner_email($auth['email'])) respond(['error' => 'この操作は行えません'], 403);
+  return $auth;
+}
+
 // 新規登録の申込を一時的に預かる表(無ければ作る)
 function ensure_signup_table(): void {
   db()->exec("CREATE TABLE IF NOT EXISTS signups (
@@ -145,7 +159,7 @@ try {
       $token = bin2hex(random_bytes(32));
       $st = db()->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))');
       $st->execute([$token, (int)$u['id']]);
-      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name']]);
+      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_email($email)]);
     }
 
     case 'logout': {
@@ -162,7 +176,7 @@ try {
       $st = db()->prepare('SELECT name FROM companies WHERE id = ?');
       $st->execute([$auth['company_id']]);
       $c = $st->fetch();
-      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '']);
+      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_email($auth['email'])]);
     }
 
     // 同じ会社にユーザーを追加(管理者のみ)
@@ -319,7 +333,7 @@ try {
       $db->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))')
          ->execute([$authToken, $userId]);
       $db->commit();
-      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company']]);
+      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company'], 'owner' => is_owner_email($s['email'])]);
     }
 
     // 新規登録: 確認コードの再送(3回まで)
@@ -338,6 +352,49 @@ try {
         respond(['error' => '確認メールを送信できませんでした'], 500);
       }
       respond(['ok' => true]);
+    }
+
+    // 運営者専用: 導入している会社の一覧(件数と利用状況のみ。中身は返さない)
+    case 'owner_companies': {
+      $auth = require_owner();
+      $st = db()->query(
+        'SELECT c.id, c.name, DATE(c.created_at) AS since,
+          (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
+          (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS doc_count,
+          (SELECT COALESCE(SUM(d.size), 0) FROM documents d WHERE d.company_id = c.id) AS doc_bytes,
+          (SELECT COALESCE(SUM(LENGTH(k.v)), 0) FROM kv_data k WHERE k.company_id = c.id) AS kv_bytes,
+          (SELECT MAX(k.updated_at) FROM kv_data k WHERE k.company_id = c.id) AS last_active
+         FROM companies c ORDER BY c.created_at'
+      );
+      respond(['ok' => true, 'companies' => $st->fetchAll(), 'my_company' => $auth['company_id']]);
+    }
+
+    // 運営者専用: 会社をデータごと削除(自社は不可)
+    case 'owner_remove_company': {
+      $auth = require_owner();
+      $cid = (int)($in['company_id'] ?? 0);
+      if ($cid === $auth['company_id']) respond(['error' => '自社は削除できません'], 400);
+      $db = db();
+      $st = $db->prepare('SELECT name FROM companies WHERE id = ?');
+      $st->execute([$cid]);
+      $c = $st->fetch();
+      if (!$c) respond(['error' => 'その会社が見つかりません'], 404);
+      // 書類ファイルの実体を先に削除
+      $st = $db->prepare('SELECT path FROM documents WHERE company_id = ?');
+      $st->execute([$cid]);
+      foreach ($st->fetchAll() as $r) {
+        $full = rtrim(FILES_DIR, '/') . '/' . $r['path'];
+        $real = realpath($full);
+        $base = realpath(FILES_DIR);
+        if ($real !== false && $base !== false && strpos($real, $base) === 0) @unlink($real);
+      }
+      @rmdir(rtrim(FILES_DIR, '/') . '/' . $cid);
+      $db->prepare('DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)')->execute([$cid]);
+      $db->prepare('DELETE FROM documents WHERE company_id = ?')->execute([$cid]);
+      $db->prepare('DELETE FROM kv_data WHERE company_id = ?')->execute([$cid]);
+      $db->prepare('DELETE FROM users WHERE company_id = ?')->execute([$cid]);
+      $db->prepare('DELETE FROM companies WHERE id = ?')->execute([$cid]);
+      respond(['ok' => true, 'removed' => $c['name']]);
     }
 
     // 動作確認用: 合言葉(SETUP_TOKEN)を知る管理者だけがコードを照会できる
