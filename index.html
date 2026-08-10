@@ -1502,6 +1502,7 @@ function ShizaiSearch() {
   // 月別材料費ページ用
   const [costYear, setCostYear] = useState(""); // 表示する年("" = 全期間)
   const [costOpen, setCostOpen] = useState(null); // 内訳を開いている月 "YYYY-MM"
+  const [costOpenCat, setCostOpenCat] = useState(null); // 品目内訳を開いている分類 "YYYY-MM|分類名"
   // 仕入先ページ用
   const [supName, setSupName] = useState("");
   const [supDone, setSupDone] = useState(null);
@@ -1659,7 +1660,11 @@ function ShizaiSearch() {
       g.total += v;
       g.count++;
       const cat = (it.category || "").trim() || "分類なし";
-      g.byCategory.set(cat, (g.byCategory.get(cat) || 0) + v);
+      if (!g.byCategory.has(cat)) g.byCategory.set(cat, { total: 0, byItem: new Map() });
+      const c = g.byCategory.get(cat);
+      c.total += v;
+      const label = (it.name || "").trim() || "品名不明";
+      c.byItem.set(label, (c.byItem.get(label) || 0) + v);
       const sup = (it.supplier || "").trim() || "仕入先不明";
       g.bySupplier.set(sup, (g.bySupplier.get(sup) || 0) + v);
     }
@@ -3093,7 +3098,7 @@ ${window.location.href.split("#")[0]}
             }
             const sum = list.reduce((s, m) => s + m.total, 0);
             const fmtY = (v) => "¥" + Math.round(v).toLocaleString("ja-JP");
-            const top = (mp, n) => [...mp.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
+            const top = (mp, n, val = (x) => x) => [...mp.entries()].sort((a, b) => val(b[1]) - val(a[1])).slice(0, n);
             return (
               <>
                 <div className="mt-3 text-sm text-gray-600">
@@ -3122,16 +3127,37 @@ ${window.location.href.split("#")[0]}
                       </button>
                       {costOpen === m.month && (
                         <div className="px-4 pb-4 grid sm:grid-cols-2 gap-4">
-                          <div>
-                            <div className="text-xs font-medium text-gray-500 mb-1.5">分類別</div>
-                            {top(m.byCategory, 8).map(([k, v]) => (
-                              <div key={k} className="flex justify-between text-sm py-0.5">
-                                <span className="text-gray-700 truncate mr-3">{k}</span>
-                                <span className="shrink-0">{fmtY(v)}</span>
-                              </div>
-                            ))}
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-gray-500 mb-1.5">分類別(タップで品目の内訳)</div>
+                            {top(m.byCategory, 8, (c) => c.total).map(([k, c]) => {
+                              const ck = m.month + "|" + k;
+                              const catOpen = costOpenCat === ck;
+                              return (
+                                <div key={k}>
+                                  <button
+                                    onClick={() => setCostOpenCat(catOpen ? null : ck)}
+                                    className="w-full flex justify-between items-center text-sm py-0.5 hover:bg-gray-100 rounded px-1 -mx-1"
+                                  >
+                                    <span className="text-gray-700 truncate mr-3 min-w-0">
+                                      <span className="text-gray-400 text-xs mr-1">{catOpen ? "▾" : "▸"}</span>{k}
+                                    </span>
+                                    <span className="shrink-0">{fmtY(c.total)}</span>
+                                  </button>
+                                  {catOpen && (
+                                    <div className="ml-3 my-1 border-l-2 border-green-100 pl-2.5">
+                                      {[...c.byItem.entries()].sort((a, b) => b[1] - a[1]).map(([name, v]) => (
+                                        <div key={name} className="flex justify-between text-xs text-gray-600 py-0.5">
+                                          <span className="truncate mr-3 min-w-0">{name}</span>
+                                          <span className="shrink-0">{fmtY(v)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <div className="text-xs font-medium text-gray-500 mb-1.5">仕入先別</div>
                             {top(m.bySupplier, 8).map(([k, v]) => (
                               <div key={k} className="flex justify-between text-sm py-0.5">
