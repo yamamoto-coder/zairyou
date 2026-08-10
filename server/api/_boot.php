@@ -21,6 +21,7 @@ if (isset($_GET['mkconfig'])) {
 
 $base = 'https://raw.githubusercontent.com/yamamoto-coder/zairyou/main/server/';
 $targets = [
+  'api/_boot.php'         => __DIR__ . '/_boot.php', // 自身も更新(機能追加を反映するため)
   'api/common.php'        => __DIR__ . '/common.php',
   'api/auth.php'          => __DIR__ . '/auth.php',
   'api/storage.php'       => __DIR__ . '/storage.php',
