@@ -36,16 +36,69 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 // GitHub Pages 版: 保存はこのブラウザの localStorage に行う
 // (Claudeアーティファクト版の window.storage 互換シム)
 // ============================================================
+// ============================================================
+// サーバー接続の設定
+//  API_BASE が設定されていればサーバー保存(会社ごとに分離・全社員で共有)。
+//  空にすると従来どおり各パソコンのブラウザ内保存で動く。
+// ============================================================
+const API_BASE = "https://tonya.craftfile.jp/api/";
+const TOKEN_KEY = "shizai-auth-token";
+
+const auth = {
+  get token() { return localStorage.getItem(TOKEN_KEY) || ""; },
+  set token(v) {
+    if (v) localStorage.setItem(TOKEN_KEY, v);
+    else localStorage.removeItem(TOKEN_KEY);
+  },
+  get on() { return !!API_BASE && !!this.token; },
+};
+
+// サーバーAPIの呼び出し(ログイン切れは onAuthExpired で通知)
+async function api(path, { method = "GET", json, form, raw } = {}) {
+  const headers = {};
+  if (auth.token) headers["Authorization"] = "Bearer " + auth.token;
+  let body;
+  if (json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(json); }
+  else if (form) { body = form; }
+  const res = await fetch(API_BASE + path, { method, headers, body });
+  if (res.status === 401) {
+    const d = await res.json().catch(() => ({}));
+    // ログイン操作そのものの失敗(パスワード違い)は、そのまま理由を返す
+    const isLoginAttempt = json && json.action === "login";
+    if (!isLoginAttempt) {
+      auth.token = "";
+      if (window.onAuthExpired) window.onAuthExpired();
+    }
+    throw new Error(d.error || (isLoginAttempt ? "ログインできませんでした" : "ログインの有効期限が切れました"));
+  }
+  if (raw) return res;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || "サーバーエラー(" + res.status + ")");
+  return data;
+}
+
 window.storage = {
   async get(key, shared) {
+    if (auth.on) {
+      const r = await api("storage.php?k=" + encodeURIComponent(key));
+      return r.value == null ? null : { key, value: r.value, shared: !!shared };
+    }
     const v = localStorage.getItem((shared ? "shared:" : "p:") + key);
     return v == null ? null : { key, value: v, shared: !!shared };
   },
   async set(key, value, shared) {
+    if (auth.on) {
+      await api("storage.php", { method: "POST", json: { k: key, v: value } });
+      return { key, value, shared: !!shared };
+    }
     localStorage.setItem((shared ? "shared:" : "p:") + key, value);
     return { key, value, shared: !!shared };
   },
   async delete(key, shared) {
+    if (auth.on) {
+      await api("storage.php?k=" + encodeURIComponent(key), { method: "DELETE" });
+      return { key, deleted: true, shared: !!shared };
+    }
     localStorage.removeItem((shared ? "shared:" : "p:") + key);
     return { key, deleted: true, shared: !!shared };
   },
@@ -151,6 +204,10 @@ async function fileHash(f) {
   return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 async function docFindByHash(hash) {
+  if (auth.on) {
+    const r = await api("docs.php?hash=" + encodeURIComponent(hash));
+    return r.exists ? { docId: r.doc_id } : null;
+  }
   const db = await docDb();
   return new Promise((res, rej) => {
     const req = db.transaction("docs").objectStore("docs").index("hash").get(hash);
@@ -159,6 +216,17 @@ async function docFindByHash(hash) {
   });
 }
 async function docPut(doc) {
+  if (auth.on) {
+    const fd = new FormData();
+    fd.append("file", doc.blob, doc.name);
+    fd.append("doc_id", doc.docId);
+    fd.append("invoice_id", doc.invoiceId);
+    fd.append("name", doc.name);
+    fd.append("mime", doc.mime || (doc.blob && doc.blob.type) || "");
+    if (doc.hash) fd.append("hash", doc.hash);
+    await api("docs.php", { method: "POST", form: fd });
+    return;
+  }
   const db = await docDb();
   return new Promise((res, rej) => {
     const tx = db.transaction("docs", "readwrite");
@@ -168,6 +236,13 @@ async function docPut(doc) {
   });
 }
 async function docsForInvoice(invoiceId) {
+  if (auth.on) {
+    const r = await api("docs.php?invoice=" + encodeURIComponent(invoiceId));
+    // サーバー版は本体を都度取りに行くため、閲覧用URLを持たせる
+    return (r.docs || []).map((d) => ({
+      docId: d.doc_id, name: d.name, mime: d.mime, size: d.size, added_at: d.added_at, remote: true,
+    }));
+  }
   const db = await docDb();
   return new Promise((res, rej) => {
     const req = db.transaction("docs").objectStore("docs").index("invoiceId").getAll(invoiceId);
@@ -175,7 +250,20 @@ async function docsForInvoice(invoiceId) {
     req.onerror = () => rej(req.error);
   });
 }
+// 原本ファイルの実体を取得(サーバー版はログイン確認を通してダウンロード)
+async function docBlobUrl(doc) {
+  if (doc.remote) {
+    const res = await api("docs.php?doc=" + encodeURIComponent(doc.docId), { raw: true });
+    if (!res.ok) throw new Error("書類を取得できませんでした");
+    return URL.createObjectURL(await res.blob());
+  }
+  return URL.createObjectURL(doc.blob);
+}
 async function docsDeleteForInvoice(invoiceId) {
+  if (auth.on) {
+    await api("docs.php?invoice=" + encodeURIComponent(invoiceId), { method: "DELETE" });
+    return;
+  }
   const db = await docDb();
   const docs = await docsForInvoice(invoiceId);
   return new Promise((res, rej) => {
@@ -359,13 +447,25 @@ function getSavedSettings() {
 }
 
 async function callClaudeRaw(body) {
+  let response;
+  // サーバー接続時はAPIキーを持つサーバーに中継させる(キーは端末に置かない)
+  if (auth.on) {
+    try {
+      response = await fetchRetry(API_BASE + "ai.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + auth.token },
+        body: JSON.stringify({ provider: "claude", body: { model: "claude-sonnet-4-6", max_tokens: 4000, ...body } }),
+      });
+    } catch {
+      throw new Error("サーバーへの通信に失敗しました。ネットワークをご確認ください");
+    }
+  } else {
   const akey = (getSavedSettings().anthropicKey || "").trim();
   if (!akey) {
     throw new Error(
       "このパソコンではAI読み取りがまだ設定されていません。設定は管理者が行いますので、管理者にご連絡ください"
     );
   }
-  let response;
   try {
     response = await fetchRetry("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -381,6 +481,7 @@ async function callClaudeRaw(body) {
     throw new Error(
       "通信に失敗しました(3回試行)。ファイルが大きい場合はスキャン解像度を下げるか、時間をおいて「再試行」を押してください"
     );
+  }
   }
   const data = await response.json();
   if (data.error) {
@@ -405,30 +506,40 @@ function geminiParts(prep, prompt) {
 }
 
 async function callGemini(cfg, parts, opts = {}) {
-  const model = cfg.geminiModel || DEFAULT_GEMINI_MODEL;
+  const model = (cfg && cfg.geminiModel) || DEFAULT_GEMINI_MODEL;
+  const reqBody = {
+    contents: [{ parts }],
+    ...(opts.search ? { tools: [{ google_search: {} }] } : {}),
+    generationConfig: {
+      ...(opts.search ? {} : { responseMimeType: "application/json" }),
+      maxOutputTokens: 8192,
+      temperature: opts.search ? 0.3 : 0,
+    },
+  };
   let resp;
+  // サーバー接続時はAPIキーを持つサーバーに中継させる(キーは端末に置かない)
+  if (auth.on) {
+    try {
+      resp = await fetchRetry(API_BASE + "ai.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + auth.token },
+        body: JSON.stringify({ provider: "gemini", model, body: reqBody }),
+      });
+    } catch {
+      throw new Error("サーバーへの通信に失敗しました。ネットワークをご確認ください");
+    }
+  } else {
   try {
     resp = await fetchRetry(
       "https://generativelanguage.googleapis.com/v1beta/models/" +
         encodeURIComponent(model) +
         ":generateContent?key=" +
         encodeURIComponent(cfg.geminiKey),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          ...(opts.search ? { tools: [{ google_search: {} }] } : {}),
-          generationConfig: {
-            ...(opts.search ? {} : { responseMimeType: "application/json" }),
-            maxOutputTokens: 8192,
-            temperature: opts.search ? 0.3 : 0,
-          },
-        }),
-      }
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(reqBody) }
     );
   } catch {
     throw new Error("Geminiへの通信に失敗しました。ネットワークをご確認ください");
+  }
   }
   const data = await resp.json();
   if (data.error) {
@@ -519,7 +630,7 @@ async function extractInvoice(prep, cfg) {
 - 不明・空欄のキーは省略する(null や空文字を書かない)
 - 値引き・送料・小計・消費税の行は含めない
 - 和暦は西暦に変換`;
-  const useGemini = cfg && cfg.engine === "gemini" && cfg.geminiKey;
+  const useGemini = auth.on ? true : (cfg && cfg.engine === "gemini" && cfg.geminiKey);
 
   async function runOnce(subPrep, extraNote) {
     const fullPrompt = prompt + (extraNote || "");
@@ -616,7 +727,7 @@ async function extractPriceList(prep, supplierName, cfg) {
     ],
   };
   let text;
-  if (cfg && cfg.engine === "gemini" && cfg.geminiKey) {
+  if (auth.on || (cfg && cfg.engine === "gemini" && cfg.geminiKey)) {
     try {
       text = await callGemini(cfg, geminiParts(prep, prompt));
     } catch {
@@ -666,7 +777,7 @@ async function predictPrice(group, cfg) {
 
 該当メーカーの発表が見つからない場合は、同分類の資材の一般的な価格改定動向から推定し、confidence を low にしてください。`;
   let text;
-  if (cfg && cfg.geminiKey) {
+  if (auth.on || (cfg && cfg.geminiKey)) {
     text = await callGemini(cfg, [{ text: prompt }], { search: true });
   } else {
     text = await callClaude({
@@ -750,8 +861,8 @@ ${tagPromptBody(group)}`;
 image_url と image_source は null、catalogs は確実に知っている公式資料が無ければ [] にしてください。URLの推測は禁止です。
 
 ${tagPromptBody(group)}`;
-  const hasGemini = !!(cfg && cfg.geminiKey);
-  const hasClaude = !!(getSavedSettings().anthropicKey || "").trim();
+  const hasGemini = auth.on ? true : !!(cfg && cfg.geminiKey);
+  const hasClaude = auth.on ? true : !!(getSavedSettings().anthropicKey || "").trim();
   // Web検索付きを優先し、失敗したらエンジン切替 → 検索なしの順で粘る
   const attempts = [];
   if (hasGemini) attempts.push(() => callGemini(cfg, [{ text: webPrompt }], { search: true }));
@@ -804,7 +915,7 @@ ${JSON.stringify(compact)}
 このデータを根拠に、次の質問に日本語で簡潔に答えてください。データにない事は推測と明記してください。
 
 質問: ${question}`;
-  if (cfg && cfg.engine === "gemini" && cfg.geminiKey) {
+  if (auth.on || (cfg && cfg.engine === "gemini" && cfg.geminiKey)) {
     const text = await callGemini(cfg, [{ text: prompt }], { search: true });
     return text;
   }
@@ -1041,6 +1152,70 @@ function SearchBar({ value, onChange, onSubmit, onAI, autoFocus, compact, histor
   );
 }
 
+// ログイン画面(サーバー保存を使うとき、未ログインなら最初に出す)
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!email.trim() || !password) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api("auth.php", {
+        method: "POST",
+        json: { action: "login", email: email.trim(), password },
+      });
+      auth.token = r.token;
+      onLoggedIn(r);
+    } catch (e) {
+      setErr((e && e.message) || "ログインできませんでした");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-center px-4" style={{ paddingTop: "12vh" }}>
+      <Logo size="large" />
+      <p className="mt-3 text-sm text-gray-500 text-center px-4">
+        建築資材の価格と購入履歴をまとめて検索
+      </p>
+      <div className="mt-8 w-full" style={{ maxWidth: 380 }}>
+        <label className="text-xs text-gray-600">メールアドレス</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          autoComplete="username"
+          className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2.5 text-base outline-none focus:border-green-600"
+        />
+        <label className="text-xs text-gray-600 mt-4 block">パスワード</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          autoComplete="current-password"
+          className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2.5 text-base outline-none focus:border-green-600"
+        />
+        {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
+        <button
+          onClick={submit}
+          disabled={busy || !email.trim() || !password}
+          className="mt-5 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium disabled:opacity-50"
+        >{busy ? "ログイン中…" : "ログイン"}</button>
+        <p className="mt-5 text-xs text-gray-400 leading-relaxed">
+          データは会社ごとにサーバーへ保存され、社内の全員で共有されます。
+          アカウントが分からない場合は管理者にご連絡ください。
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // 納品先住所の入力欄。フォーカスすると過去に使った住所がドロップダウンで出る
 function AddressInput({ value, onChange, history, onRemove, placeholder }) {
   const [open, setOpen] = useState(false);
@@ -1171,6 +1346,9 @@ function ShizaiSearch() {
   const [pricelists, setPricelists] = useState([]);
   const [inbox, setInbox] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  // サーバー保存を使う場合のログイン状態(未ログインならログイン画面を出す)
+  const [account, setAccount] = useState(null); // {email, role, company}
+  const [authReady, setAuthReady] = useState(!API_BASE);
   const [view, setView] = useState("home"); // home | results | detail | manage | supplier
   const [query, setQuery] = useState("");
   const [committed, setCommitted] = useState("");
@@ -1228,7 +1406,34 @@ function ShizaiSearch() {
   );
 
   // ---------- 初期読込 ----------
+  // ログイン状態の確認(保存済みトークンが有効か)と、切れたときの復帰
   useEffect(() => {
+    if (!API_BASE) return;
+    window.onAuthExpired = () => { setAccount(null); setLoaded(false); };
+    (async () => {
+      if (!auth.token) { setAuthReady(true); return; }
+      try {
+        const me = await api("auth.php", { method: "POST", json: { action: "me" } });
+        setAccount({ email: me.email, role: me.role, company: me.company });
+      } catch {
+        auth.token = "";
+      }
+      setAuthReady(true);
+    })();
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await api("auth.php", { method: "POST", json: { action: "logout" } }); } catch {}
+    auth.token = "";
+    setAccount(null);
+    setLoaded(false);
+    setInvoices([]); setPricelists([]); setInbox([]); setCart([]); setOrderLog([]);
+    setView("home");
+  }, []);
+
+  useEffect(() => {
+    // サーバー保存の場合はログイン後に読み込む
+    if (API_BASE && !account) return;
     (async () => {
       const [inv, pl, ib, st, hist, st2, tg, ct, ah, tpl, olog] = await Promise.all([
         sget(INVOICES_KEY), sget(PRICELIST_KEY), sget(INBOX_KEY, true), sget(SETTINGS_KEY), sget(HISTORY_KEY), sget(SITES_KEY), sget(TAGS_KEY), sget(CART_KEY), sget(ADDR_KEY), sget(ORDER_TPL_KEY), sget(ORDERS_KEY),
@@ -1251,7 +1456,7 @@ function ShizaiSearch() {
       if (st?.anthropicKey) setAnthropicKey(st.anthropicKey);
       setLoaded(true);
     })();
-  }, []);
+  }, [account]);
 
   const persistSettings = useCallback(
     (over = {}) => {
@@ -1969,14 +2174,20 @@ function ShizaiSearch() {
       window.alert("この書類の原本は保存されていません(原本保存機能が付く前に取り込まれたものです)");
       return;
     }
-    setDocView({
-      invoice: inv,
-      docs: docs.map((d) => ({
-        name: d.name,
-        mime: d.mime || (d.blob && d.blob.type) || "",
-        url: URL.createObjectURL(d.blob),
-      })),
-    });
+    let items;
+    try {
+      items = await Promise.all(
+        docs.map(async (d) => ({
+          name: d.name,
+          mime: d.mime || (d.blob && d.blob.type) || "",
+          url: await docBlobUrl(d),
+        }))
+      );
+    } catch (e) {
+      window.alert("書類を取得できませんでした: " + ((e && e.message) || ""));
+      return;
+    }
+    setDocView({ invoice: inv, docs: items });
   }, []);
   const closeDocs = useCallback(() => {
     setDocView((v) => {
@@ -2019,6 +2230,22 @@ ${window.location.href.split("#")[0]}
   };
 
   const pendingCount = inbox.filter((s) => s.status === "pending").length;
+
+  // サーバー保存の場合、ログインが済むまでは他の画面を出さない
+  if (API_BASE && !account) {
+    if (!authReady) {
+      return (
+        <div className="min-h-screen bg-white flex items-center justify-center text-sm text-gray-400">
+          読み込み中…
+        </div>
+      );
+    }
+    return (
+      <div className="min-h-screen bg-white text-gray-800">
+        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company })} />
+      </div>
+    );
+  }
 
   // ============================================================
   return (
@@ -2670,8 +2897,9 @@ ${window.location.href.split("#")[0]}
         <div className="px-4 md:px-8 py-6 pb-24" style={{ maxWidth: 840 }}>
           <h1 className="text-xl font-bold mb-1">データ管理</h1>
 
-          {/* 読み取りエンジン設定(管理者モード限定) */}
-          {IS_ADMIN && (
+          {/* 読み取りエンジン設定(管理者モード限定)
+              サーバー保存時はAPIキーをサーバーが持つため、この欄は不要 */}
+          {IS_ADMIN && !auth.on && (
           <div className="mt-5 border border-gray-200 rounded-xl p-4">
             <h2 className="font-medium">読み取りエンジン <span className="text-xs font-normal text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 ml-1">管理者モード</span></h2>
             <p className="text-xs text-gray-500 mt-1">
@@ -2806,7 +3034,7 @@ ${window.location.href.split("#")[0]}
           )}
 
           {/* 一般ユーザー向け: 読み取りエンジン未設定時の案内 */}
-          {!IS_ADMIN && !(geminiKey.trim() || anthropicKey.trim()) && (
+          {!IS_ADMIN && !auth.on && !(geminiKey.trim() || anthropicKey.trim()) && (
             <div className="mt-5 border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-800 leading-relaxed">
               このパソコンでは請求書のAI読み取りがまだ設定されていません。設定は管理者が行いますので、管理者にご連絡ください。
             </div>
@@ -2881,6 +3109,50 @@ ${window.location.href.split("#")[0]}
               </div>
             )}
           </div>
+
+          {/* アカウント(サーバー保存時のみ) */}
+          {account && (
+            <div className="mt-5 border border-gray-200 rounded-xl p-4">
+              <h2 className="font-medium">アカウント</h2>
+              <div className="mt-2 text-sm text-gray-700">
+                {account.company} / {account.email}
+                <span className="ml-2 text-xs text-gray-500">
+                  {account.role === "admin" ? "管理者" : "一般"}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+                データは会社ごとにサーバーへ保存され、社内の全員で共有されます。
+                パソコンを変えても同じデータが見られます。
+              </p>
+              <div className="mt-3 flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={() => { if (window.confirm("ログアウトしますか?")) logout(); }}
+                  className="text-sm text-gray-600 border border-gray-200 hover:bg-gray-50 rounded px-4 py-1.5"
+                >ログアウト</button>
+                <button
+                  onClick={async () => {
+                    if (!window.confirm("このパソコンに残っている以前のデータをサーバーへ引き継ぎますか?\n(サーバー側に同じ項目がある場合は上書きされます)")) return;
+                    const keys = [INVOICES_KEY, PRICELIST_KEY, SETTINGS_KEY, HISTORY_KEY, SITES_KEY, TAGS_KEY, CART_KEY, ADDR_KEY, ORDER_TPL_KEY, ORDERS_KEY];
+                    const bulk = [];
+                    for (const k of keys) {
+                      const v = localStorage.getItem("p:" + k);
+                      if (v != null) bulk.push({ k, v });
+                    }
+                    if (!bulk.length) { window.alert("引き継ぐデータはありませんでした"); return; }
+                    try {
+                      await api("storage.php", { method: "POST", json: { bulk } });
+                      window.alert(bulk.length + " 件のデータをサーバーへ引き継ぎました。画面を再読み込みします");
+                      location.reload();
+                    } catch (e) {
+                      window.alert("引き継ぎに失敗しました: " + ((e && e.message) || ""));
+                    }
+                  }}
+                  className="text-sm text-green-800 border border-green-200 hover:bg-green-50 rounded px-4 py-1.5"
+                  title="このパソコンのブラウザに残っている以前のデータをサーバーへ移します"
+                >このパソコンの以前のデータを引き継ぐ</button>
+              </div>
+            </div>
+          )}
 
           {/* 納品先の登録 */}
           <div className="mt-8">
