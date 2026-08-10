@@ -11,9 +11,26 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+// config.php が無い場合、?mkconfig=1 で見本から雛形を作る(値は後で手入力)
 if (!file_exists(__DIR__ . '/config.php')) {
+  if (isset($_GET['mkconfig'])) {
+    $tpl = @file_get_contents(__DIR__ . '/config.sample.php');
+    if ($tpl === false) {
+      http_response_code(500);
+      echo json_encode(['error' => 'config.sample.php がありません'], JSON_UNESCAPED_UNICODE);
+      exit;
+    }
+    $ok = @file_put_contents(__DIR__ . '/config.php', $tpl);
+    echo json_encode(
+      $ok !== false
+        ? ['ok' => true, 'next' => 'config.php を作成しました。ファイルマネージャで開いて値を入力してください']
+        : ['error' => 'config.php の作成に失敗しました(書き込み権限を確認してください)'],
+      JSON_UNESCAPED_UNICODE
+    );
+    exit;
+  }
   http_response_code(500);
-  echo json_encode(['error' => 'config.php がありません。先に設定ファイルを作成してください']);
+  echo json_encode(['error' => 'config.php がありません。?mkconfig=1 を付けると雛形を作成します'], JSON_UNESCAPED_UNICODE);
   exit;
 }
 require __DIR__ . '/config.php';
