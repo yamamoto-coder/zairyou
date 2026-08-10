@@ -418,13 +418,41 @@ try {
           (SELECT COALESCE(SUM(a.output_tokens), 0) FROM api_usage a WHERE a.company_id = c.id) AS t_out
          FROM companies c ORDER BY c.created_at"
       );
-      // 単価(config.php で上書き可能。既定は Gemini 3.5 Flash の公表価格)
+      $companies = $st->fetchAll();
+      // モデルごとの単価(USD/100万トークン)で正確に集計する
+      $priceOf = function (string $model): array {
+        if (strpos($model, 'flash-lite') !== false) return [0.30, 2.50]; // Gemini 3.5 Flash-Lite
+        return [1.50, 9.00]; // Gemini 3.5 Flash ほか
+      };
+      $monthStart = date('Y-m-01');
+      $costs = []; // company_id => [m_cost, t_cost]
+      $uq = db()->prepare(
+        "SELECT company_id, model,
+           SUM(CASE WHEN created_at >= ? THEN prompt_tokens ELSE 0 END) AS m_in,
+           SUM(CASE WHEN created_at >= ? THEN output_tokens ELSE 0 END) AS m_out,
+           SUM(prompt_tokens) AS t_in, SUM(output_tokens) AS t_out
+         FROM api_usage GROUP BY company_id, model"
+      );
+      $uq->execute([$monthStart, $monthStart]);
+      foreach ($uq->fetchAll() as $r) {
+        [$pi, $po] = $priceOf((string)$r['model']);
+        $cid = (int)$r['company_id'];
+        if (!isset($costs[$cid])) $costs[$cid] = [0.0, 0.0];
+        $costs[$cid][0] += ((int)$r['m_in'] / 1e6) * $pi + ((int)$r['m_out'] / 1e6) * $po;
+        $costs[$cid][1] += ((int)$r['t_in'] / 1e6) * $pi + ((int)$r['t_out'] / 1e6) * $po;
+      }
+      foreach ($companies as &$c) {
+        $cid = (int)$c['id'];
+        $c['m_cost_usd'] = round($costs[$cid][0] ?? 0.0, 4);
+        $c['t_cost_usd'] = round($costs[$cid][1] ?? 0.0, 4);
+      }
+      unset($c);
       $rates = [
-        'in_usd' => defined('AI_PRICE_IN_USD') ? (float)AI_PRICE_IN_USD : 1.50,
-        'out_usd' => defined('AI_PRICE_OUT_USD') ? (float)AI_PRICE_OUT_USD : 9.00,
+        'in_usd' => 1.50, 'out_usd' => 9.00, // 参考表示用(通常モデルの単価)
+        'lite_in_usd' => 0.30, 'lite_out_usd' => 2.50,
         'usd_jpy' => defined('USD_JPY') ? (float)USD_JPY : 150.0,
       ];
-      respond(['ok' => true, 'companies' => $st->fetchAll(), 'my_company' => $auth['company_id'], 'rates' => $rates]);
+      respond(['ok' => true, 'companies' => $companies, 'my_company' => $auth['company_id'], 'rates' => $rates]);
     }
 
     // 運営者専用: 会社をデータごと削除(自社は不可)

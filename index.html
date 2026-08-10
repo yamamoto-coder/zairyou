@@ -631,6 +631,8 @@ async function callClaudeRaw(body) {
 
 // ---------- Google Gemini API(ユーザーのAPIキーで直接呼び出し) ----------
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+// 料金が約1/4の軽量モデル。読み取りはまずこちらで試し、失敗したら通常モデルへ
+const LITE_GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 function geminiParts(prep, prompt) {
   const media =
@@ -641,12 +643,15 @@ function geminiParts(prep, prompt) {
 }
 
 async function callGemini(cfg, parts, opts = {}) {
-  const model = (cfg && cfg.geminiModel) || DEFAULT_GEMINI_MODEL;
+  const model = opts.lite ? LITE_GEMINI_MODEL : (cfg && cfg.geminiModel) || DEFAULT_GEMINI_MODEL;
   const reqBody = {
     contents: [{ parts }],
     ...(opts.search ? { tools: [{ google_search: {} }] } : {}),
     generationConfig: {
       ...(opts.search ? {} : { responseMimeType: "application/json" }),
+      // 読み取り系では内部の「思考」を切る(出力料金の2〜4割を占めるため)。
+      // 軽量モデルはこの指定自体を受け付けない(元々思考しない)ので送らない
+      ...(opts.search || opts.lite ? {} : { thinkingConfig: { thinkingBudget: 0 } }),
       maxOutputTokens: 8192,
       temperature: opts.search ? 0.3 : 0,
     },
@@ -774,29 +779,38 @@ async function extractInvoice(prep, cfg) {
         { role: "user", content: [...contentBlocksFor(subPrep), { type: "text", text: fullPrompt }] },
       ],
     };
-    let text;
-    let fb = false;
-    if (useGemini) {
+    // 呼び出し→解析までを1セットで行う(解析できなければ失敗扱いにして次の手へ)
+    const readWith = async (call) => {
+      const text = await call();
+      let parsed;
       try {
-        text = await callGemini(cfg, geminiParts(subPrep, fullPrompt));
+        parsed = parseJson(text);
       } catch {
-        fb = true;
-        text = await callClaude(claudeMsg);
+        parsed = salvageInvoice(text);
       }
-    } else {
-      text = await callClaude(claudeMsg);
-    }
-    let parsed;
-    try {
-      parsed = parseJson(text);
-    } catch {
-      parsed = salvageInvoice(text);
       if (!parsed) {
         const head = (text || "").slice(0, 120).replace(/\s+/g, " ");
         throw new Error("明細の解析に失敗しました(AI応答の冒頭: " + head + " …)");
       }
+      return parsed;
+    };
+    // 料金の安い軽量モデル → 通常モデル → Claude の順で粘る
+    const attempts = [];
+    if (useGemini) {
+      attempts.push({ fb: false, run: () => readWith(() => callGemini(cfg, geminiParts(subPrep, fullPrompt), { lite: true })) });
+      attempts.push({ fb: false, run: () => readWith(() => callGemini(cfg, geminiParts(subPrep, fullPrompt))) });
     }
-    return { parsed, fb };
+    attempts.push({ fb: useGemini, run: () => readWith(() => callClaude(claudeMsg)) });
+    let lastErr = null;
+    for (const a of attempts) {
+      try {
+        return { parsed: await a.run(), fb: a.fb };
+      } catch (e) {
+        // 「キー未設定」の類いは前段の本当の失敗理由を隠さない
+        if (!lastErr || !/未設定/.test((e && e.message) || "")) lastErr = e;
+      }
+    }
+    throw lastErr || new Error("読み取りに失敗しました");
   }
 
   // ページ画像が多い場合は3ページずつに分けて送信(サイズ・時間の問題を回避)
@@ -3499,7 +3513,9 @@ ${window.location.href.split("#")[0]}
             <p className="mt-6 text-sm text-gray-400">読み込んでいます…</p>
           ) : (() => {
             const rates = tenants.rates || { in_usd: 1.5, out_usd: 9.0, usd_jpy: 150 };
-            const aiCost = (tin, tout) => (Number(tin) / 1e6) * rates.in_usd + (Number(tout) / 1e6) * rates.out_usd;
+            // 料金はサーバーがモデルごとの単価で計算した値を使う
+            const mCost = (c) => Number(c.m_cost_usd || 0);
+            const tCost = (c) => Number(c.t_cost_usd || 0);
             const fmtUsd = (v) => "$" + (v < 0.005 ? "0.00" : v.toFixed(2));
             const fmtCost = (v) => fmtUsd(v) + "(約" + Math.round(v * rates.usd_jpy).toLocaleString("ja-JP") + "円)";
             const fmtTok = (n) => {
@@ -3511,8 +3527,8 @@ ${window.location.href.split("#")[0]}
             const all = tenants.companies || [];
             const q = norm(tenantQuery.trim());
             const list = q ? all.filter((c) => norm(c.name).includes(q)) : all;
-            const mTotal = all.reduce((s, c) => s + aiCost(c.m_in, c.m_out), 0);
-            const tTotal = all.reduce((s, c) => s + aiCost(c.t_in, c.t_out), 0);
+            const mTotal = all.reduce((s, c) => s + mCost(c), 0);
+            const tTotal = all.reduce((s, c) => s + tCost(c), 0);
             // 利用状況の判定(最後に操作した日からの経過で色分け)
             const statusOf = (c) => {
               const seen = c.last_seen ? new Date(String(c.last_seen).replace(" ", "T")) : null;
@@ -3609,10 +3625,10 @@ ${window.location.href.split("#")[0]}
                       </div>
                       <div className="mt-1 text-xs">
                         <span className="text-gray-500">AI利用 — 今月: </span>
-                        <span className="font-medium text-gray-700">{Number(c.m_calls).toLocaleString("ja-JP")} 回 / {fmtCost(aiCost(c.m_in, c.m_out))}</span>
+                        <span className="font-medium text-gray-700">{Number(c.m_calls).toLocaleString("ja-JP")} 回 / {fmtCost(mCost(c))}</span>
                         <span className="text-gray-400">(入力 {fmtTok(c.m_in)}・出力 {fmtTok(c.m_out)} トークン)</span>
                         <span className="text-gray-500"> ・ 累計: </span>
-                        <span className="font-medium text-gray-700">{fmtCost(aiCost(c.t_in, c.t_out))}</span>
+                        <span className="font-medium text-gray-700">{fmtCost(tCost(c))}</span>
                       </div>
                     </div>
                   ))}
@@ -3621,8 +3637,10 @@ ${window.location.href.split("#")[0]}
                   )}
                 </div>
                 <p className="mt-3 text-xs text-gray-400 leading-relaxed">
-                  単価: 入力 ${rates.in_usd} / 出力 ${rates.out_usd}(100万トークンあたり)・換算 1ドル={rates.usd_jpy}円。
-                  概算です。正確な請求額は Google AI Studio の請求画面をご確認ください。
+                  単価(100万トークンあたり): 軽量モデル 入力${rates.lite_in_usd}/出力${rates.lite_out_usd}、
+                  通常モデル 入力${rates.in_usd}/出力${rates.out_usd}・換算 1ドル={rates.usd_jpy}円。
+                  有料契約した場合の概算です。無料枠のキーで運用中の実支払いは0円で、
+                  正確な請求額は Google AI Studio の請求画面をご確認ください。
                 </p>
               </>
             );
