@@ -8,18 +8,24 @@ declare(strict_types=1);
 require __DIR__ . '/common.php';
 
 $auth = require_auth(); // ログイン者のみ(会社IDも取れるため将来の利用量集計に使える)
-$in = json_input();
-$provider = (string)($in['provider'] ?? '');
-$body = $in['body'] ?? null;
-if (!is_array($body)) respond(['error' => 'リクエスト本文がありません'], 400);
+
+// 注意: ここは連想配列ではなくオブジェクトとして読む。
+// 連想配列にすると空のオブジェクト {} が空の配列 [] に化けてしまい、
+// Web検索の指定 "google_search": {} が Google 側で弾かれる。
+$raw = file_get_contents('php://input');
+$in = ($raw === '' || $raw === false) ? null : json_decode($raw);
+if (!is_object($in)) respond(['error' => 'リクエストを読み取れませんでした'], 400);
+$provider = isset($in->provider) ? (string)$in->provider : '';
+$body = $in->body ?? null;
+if (!is_object($body)) respond(['error' => 'リクエスト本文がありません'], 400);
 
 // 中継先はこの2つだけ。任意URLへの転送は絶対にしない(SSRF対策)
 try {
   if ($provider === 'gemini') {
     if (GEMINI_API_KEY === '') respond(['error' => 'サーバーに Gemini のAPIキーが設定されていません'], 503);
     $model = GEMINI_MODEL;
-    if (isset($in['model']) && preg_match('/^[a-zA-Z0-9.\-]+$/', (string)$in['model'])) {
-      $model = (string)$in['model'];
+    if (isset($in->model) && preg_match('/^[a-zA-Z0-9.\-]+$/', (string)$in->model)) {
+      $model = (string)$in->model;
     }
     $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
          . rawurlencode($model) . ':generateContent?key=' . rawurlencode(GEMINI_API_KEY);
@@ -32,8 +38,8 @@ try {
       'x-api-key: ' . ANTHROPIC_API_KEY,
       'anthropic-version: 2023-06-01',
     ];
-    if (!isset($body['model'])) $body['model'] = 'claude-sonnet-4-6';
-    if (!isset($body['max_tokens'])) $body['max_tokens'] = 4000;
+    if (!isset($body->model)) $body->model = 'claude-sonnet-4-6';
+    if (!isset($body->max_tokens)) $body->max_tokens = 4000;
   } else {
     respond(['error' => 'provider は gemini か claude を指定してください'], 400);
   }
