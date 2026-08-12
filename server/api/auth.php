@@ -67,6 +67,40 @@ function normalize_phone(string $raw): ?string {
   return $digits;
 }
 
+// 使い心地アンケートの回答を保存する表(無ければ作る)
+function ensure_feedback_table(): void {
+  db()->exec("CREATE TABLE IF NOT EXISTS feedback (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    user_id INT NOT NULL,
+    email VARCHAR(190) NOT NULL DEFAULT '',
+    rating TINYINT NOT NULL,
+    good TEXT,
+    request TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_company (company_id)
+  ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+}
+
+// 導入から7日たった会社に、まだ回答が無ければアンケートを出す
+// (会社の誰かが1回答えれば、その会社には二度と出さない)
+function feedback_due(int $companyId): bool {
+  if (is_owner_company($companyId)) return false; // 運営会社には出さない
+  try {
+    ensure_feedback_table();
+    $st = db()->prepare(
+      'SELECT (SELECT COUNT(*) FROM feedback f WHERE f.company_id = c.id) AS answered,
+              (c.created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS due
+       FROM companies c WHERE c.id = ?'
+    );
+    $st->execute([$companyId]);
+    $r = $st->fetch();
+    return $r && (int)$r['due'] === 1 && (int)$r['answered'] === 0;
+  } catch (Throwable $e) {
+    return false; // アンケートの都合で本処理を止めない
+  }
+}
+
 // 確認コードのメールを送る(ブランドデザインのHTML + 文字だけの控えを同封)
 function send_signup_mail(string $email, string $code): bool {
   $subject = mb_encode_mimeheader('【問屋さん】メールアドレス確認コード', 'UTF-8', 'B');
@@ -187,7 +221,7 @@ try {
       $token = bin2hex(random_bytes(32));
       $st = db()->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))');
       $st->execute([$token, (int)$u['id']]);
-      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_company((int)$u['company_id'])]);
+      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_company((int)$u['company_id']), 'feedback_due' => feedback_due((int)$u['company_id'])]);
     }
 
     case 'logout': {
@@ -204,7 +238,7 @@ try {
       $st = db()->prepare('SELECT name FROM companies WHERE id = ?');
       $st->execute([$auth['company_id']]);
       $c = $st->fetch();
-      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_company($auth['company_id'])]);
+      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_company($auth['company_id']), 'feedback_due' => feedback_due($auth['company_id'])]);
     }
 
     // 同じ会社にユーザーを追加(管理者のみ)
@@ -395,6 +429,19 @@ try {
       respond(['ok' => true]);
     }
 
+    // 使い心地アンケートの回答を受け取る
+    case 'feedback_submit': {
+      $auth = require_auth();
+      ensure_feedback_table();
+      $rating = (int)($in['rating'] ?? 0);
+      if ($rating < 1 || $rating > 5) respond(['error' => '満足度(星1〜5)を選んでください'], 400);
+      $good = mb_substr(trim((string)($in['good'] ?? '')), 0, 2000);
+      $request = mb_substr(trim((string)($in['request'] ?? '')), 0, 2000);
+      db()->prepare('INSERT INTO feedback (company_id, user_id, email, rating, good, request) VALUES (?, ?, ?, ?, ?, ?)')
+          ->execute([$auth['company_id'], $auth['user_id'], $auth['email'], $rating, $good, $request]);
+      respond(['ok' => true]);
+    }
+
     // 運営者専用: 導入している会社の一覧(件数と利用状況のみ。中身は返さない)
     case 'owner_companies': {
       $auth = require_owner();
@@ -417,8 +464,11 @@ try {
         PRIMARY KEY (company_id, user_id, day)
       ) CHARACTER SET utf8mb4");
       ensure_signup_table(); // companies.source / phone 列の用意も兼ねる
+      ensure_feedback_table();
       $st = db()->query(
         "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source, c.phone,
+          (SELECT COUNT(*) FROM feedback f WHERE f.company_id = c.id) AS fb_count,
+          (SELECT AVG(f.rating) FROM feedback f WHERE f.company_id = c.id) AS fb_avg,
           (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
           (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS doc_count,
           (SELECT COALESCE(SUM(d.size), 0) FROM documents d WHERE d.company_id = c.id) AS doc_bytes,
@@ -468,7 +518,12 @@ try {
         'lite_in_usd' => 0.30, 'lite_out_usd' => 2.50,
         'usd_jpy' => defined('USD_JPY') ? (float)USD_JPY : 150.0,
       ];
-      respond(['ok' => true, 'companies' => $companies, 'my_company' => $auth['company_id'], 'rates' => $rates]);
+      // アンケートの回答本文(新しい順。導入社が増えても重くならないよう500件まで)
+      $fq = db()->query(
+        "SELECT company_id, email, rating, good, request, DATE(created_at) AS on_day
+         FROM feedback ORDER BY id DESC LIMIT 500"
+      );
+      respond(['ok' => true, 'companies' => $companies, 'my_company' => $auth['company_id'], 'rates' => $rates, 'feedback' => $fq->fetchAll()]);
     }
 
     // 運営者専用: 会社をデータごと削除(自社は不可)
