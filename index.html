@@ -1587,6 +1587,55 @@ function FeedbackGate({ onDone }) {
   );
 }
 
+// 同業者への紹介(紹介経由の登録は utm_source=referral で記録され、導入社の管理に紹介元が表示される)
+function ReferralShare({ account, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const url = "https://tonyasan.jp/lp/?utm_source=referral&utm_medium=share&utm_campaign=ref-" + (account.companyId || 0);
+  const text = "請求書を入れるだけで、建築資材の価格と購入履歴がすぐ検索できる無料システム「問屋さん」を紹介します。\nうちの会社でも使っています。登録は1分で、費用はかかりません。\n\n" + url;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(true);
+    }
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full my-auto p-6 sm:p-8" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <h2 className="font-bold text-lg">同業者に問屋さんを紹介</h2>
+        <p className="mt-2 text-sm text-gray-500 leading-relaxed">
+          下の文面をそのまま送るだけで紹介できます。
+          紹介された会社も、すべての機能を無料で使えます。
+        </p>
+        <textarea
+          readOnly
+          value={text}
+          rows={7}
+          className="mt-4 w-full border border-gray-200 bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-700 outline-none resize-none"
+        />
+        <button onClick={() => window.open("https://line.me/R/share?text=" + encodeURIComponent(text), "_blank")}
+          className="mt-4 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium"
+        >LINEで送る</button>
+        <button onClick={copy}
+          className="mt-2 w-full text-green-800 bg-green-50 hover:bg-green-100 border border-green-200 rounded-xl py-3 font-medium"
+        >{copied ? "コピーしました" : "文面をコピー(メール・チャット用)"}</button>
+        <button onClick={onClose} className="mt-2 w-full text-sm text-gray-500 hover:text-gray-700 py-2">閉じる</button>
+        <p className="mt-1 text-xs text-gray-400">
+          「LINEで送る」はスマホでLINEの共有画面が開きます(パソコンではコピーしてお使いください)。
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // 納品先住所の入力欄。フォーカスすると過去に使った住所がドロップダウンで出る
 function AddressInput({ value, onChange, history, onRemove, placeholder }) {
   const [open, setOpen] = useState(false);
@@ -1726,6 +1775,7 @@ function ShizaiSearch() {
   const [tenants, setTenants] = useState(null); // {companies: [...], my_company, rates}
   const [tenantQuery, setTenantQuery] = useState(""); // 会社名の絞り込み
   const [fbOpenId, setFbOpenId] = useState(null); // フィードバック本文を開いている会社ID
+  const [referOpen, setReferOpen] = useState(false); // 同業者への紹介モーダル
   // 社員の管理(管理者のみ)
   const [staff, setStaff] = useState(null); // {users: [...], me: 自分のID}
   const [nsEmail, setNsEmail] = useState(""); // 追加フォーム
@@ -1802,7 +1852,7 @@ function ShizaiSearch() {
       if (!auth.token) { setAuthReady(true); return; }
       try {
         const me = await api("auth.php", { method: "POST", json: { action: "me" } });
-        setAccount({ email: me.email, role: me.role, company: me.company, owner: !!me.owner, fbDue: !!me.feedback_due });
+        setAccount({ email: me.email, role: me.role, company: me.company, companyId: me.company_id || 0, owner: !!me.owner, fbDue: !!me.feedback_due });
       } catch {
         auth.token = "";
       }
@@ -2782,7 +2832,7 @@ ${window.location.href.split("#")[0]}
     }
     return (
       <div className="min-h-screen bg-white text-gray-800">
-        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company, owner: !!r.owner, fbDue: !!r.feedback_due })} />
+        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company, companyId: r.company_id || 0, owner: !!r.owner, fbDue: !!r.feedback_due })} />
       </div>
     );
   }
@@ -2805,6 +2855,11 @@ ${window.location.href.split("#")[0]}
       {/* 使い心地アンケート(導入から7日たった会社に、回答があるまで表示) */}
       {account && account.fbDue && (
         <FeedbackGate onDone={() => setAccount({ ...account, fbDue: false })} />
+      )}
+
+      {/* 同業者への紹介 */}
+      {referOpen && account && (
+        <ReferralShare account={account} onClose={() => setReferOpen(false)} />
       )}
 
       {dragging && (
@@ -2885,6 +2940,16 @@ ${window.location.href.split("#")[0]}
             <p className="mt-10 text-xs text-gray-400">
               登録済み: 請求書 {invoices.length} 枚 / 明細 {allItems.length} 件 / 料金表 {pricelists.length} 通
             </p>
+          )}
+
+          {auth.on && account && (
+            <button
+              onClick={() => setReferOpen(true)}
+              className="mt-6 flex items-center gap-2 text-sm text-green-800 bg-green-50 hover:bg-green-100 border border-green-200 rounded-full px-5 py-2.5"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="8" r="3"></circle><path d="M3 20c0-4 2.5-6 6-6s6 2 6 6"></path><path d="M18 8v6M21 11h-6"></path></svg>
+              同業者に問屋さんを紹介する
+            </button>
           )}
         </div>
       )}
@@ -3643,6 +3708,12 @@ ${window.location.href.split("#")[0]}
               try {
                 const s = JSON.parse(c.source || "null");
                 if (!s) return "記録なし";
+                // 紹介経由: ref-<会社ID> を会社名に読み替える
+                if (s.utm_source === "referral" && /^ref-\d+$/.test(String(s.utm_campaign || ""))) {
+                  const rid = Number(String(s.utm_campaign).slice(4));
+                  const rc = all.find((x) => Number(x.id) === rid);
+                  return "紹介: " + (rc ? rc.name : "退会済みの会社(ID " + rid + ")");
+                }
                 if (s.utm_source) return s.utm_source + (s.utm_campaign ? " / " + s.utm_campaign : "");
                 if (s.ref) { try { return "紹介元: " + new URL(s.ref).hostname; } catch { return "紹介元: " + String(s.ref).slice(0, 30); } }
                 return "直接アクセス";

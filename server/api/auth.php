@@ -221,7 +221,7 @@ try {
       $token = bin2hex(random_bytes(32));
       $st = db()->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))');
       $st->execute([$token, (int)$u['id']]);
-      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'owner' => is_owner_company((int)$u['company_id']), 'feedback_due' => feedback_due((int)$u['company_id'])]);
+      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'company_id' => (int)$u['company_id'], 'owner' => is_owner_company((int)$u['company_id']), 'feedback_due' => feedback_due((int)$u['company_id'])]);
     }
 
     case 'logout': {
@@ -238,7 +238,7 @@ try {
       $st = db()->prepare('SELECT name FROM companies WHERE id = ?');
       $st->execute([$auth['company_id']]);
       $c = $st->fetch();
-      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'owner' => is_owner_company($auth['company_id']), 'feedback_due' => feedback_due($auth['company_id'])]);
+      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'company_id' => $auth['company_id'], 'owner' => is_owner_company($auth['company_id']), 'feedback_due' => feedback_due($auth['company_id'])]);
     }
 
     // 同じ会社にユーザーを追加(管理者のみ)
@@ -408,7 +408,7 @@ try {
       $db->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))')
          ->execute([$authToken, $userId]);
       $db->commit();
-      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company'], 'owner' => is_owner_company($companyId)]);
+      respond(['ok' => true, 'token' => $authToken, 'email' => $s['email'], 'role' => 'admin', 'company' => $s['company'], 'company_id' => $companyId, 'owner' => is_owner_company($companyId)]);
     }
 
     // 新規登録: 確認コードの再送(3回まで)
