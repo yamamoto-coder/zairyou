@@ -549,6 +549,10 @@ try {
       $db->prepare('DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)')->execute([$cid]);
       $db->prepare('DELETE FROM documents WHERE company_id = ?')->execute([$cid]);
       $db->prepare('DELETE FROM kv_data WHERE company_id = ?')->execute([$cid]);
+      // 利用記録・アンケートも残さない(表がまだ無い環境でも止まらないようにする)
+      foreach (['feedback', 'activity_log', 'api_usage'] as $tbl) {
+        try { $db->prepare("DELETE FROM {$tbl} WHERE company_id = ?")->execute([$cid]); } catch (Throwable $e) {}
+      }
       $db->prepare('DELETE FROM users WHERE company_id = ?')->execute([$cid]);
       $db->prepare('DELETE FROM companies WHERE id = ?')->execute([$cid]);
       respond(['ok' => true, 'removed' => $c['name']]);
