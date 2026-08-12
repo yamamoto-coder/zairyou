@@ -1307,6 +1307,7 @@ function LoginScreen({ onLoggedIn }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [company, setCompany] = useState("");
+  const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [signupToken, setSignupToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1340,8 +1341,12 @@ function LoginScreen({ onLoggedIn }) {
     }
   };
 
+  // 電話番号のかんたんな体裁確認(全角数字も数えて10〜11桁の携帯・固定電話)
+  const phoneDigits = phone.replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0)).replace(/[^0-9]/g, "");
+  const phoneOk = /^0\d{9,10}$/.test(phoneDigits);
+
   const startSignup = async () => {
-    if (!company.trim() || !email.trim() || password.length < 8) return;
+    if (!company.trim() || !phoneOk || !email.trim() || password.length < 8) return;
     setBusy(true);
     setErr("");
     try {
@@ -1349,7 +1354,7 @@ function LoginScreen({ onLoggedIn }) {
       try { source = JSON.parse(localStorage.getItem("shizai-first-touch") || "null"); } catch {}
       const r = await api("auth.php", {
         method: "POST",
-        json: { action: "signup_start", company: company.trim(), email: email.trim(), password, source },
+        json: { action: "signup_start", company: company.trim(), phone: phone.trim(), email: email.trim(), password, source },
       });
       setSignupToken(r.signup_token);
       setMode("verify");
@@ -1438,6 +1443,12 @@ function LoginScreen({ onLoggedIn }) {
           <label className="text-xs text-gray-600 mt-5 block">会社名</label>
           <input type="text" value={company} onChange={(e) => setCompany(e.target.value)}
             placeholder="例: 株式会社◯◯工務店" className={inputCls} />
+          <label className="text-xs text-gray-600 mt-4 block">電話番号</label>
+          <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+            placeholder="例: 090-1234-5678" autoComplete="tel" className={inputCls} />
+          {phone.trim().length > 0 && !phoneOk && (
+            <div className="mt-1 text-xs text-amber-600">10〜11桁の電話番号を入力してください</div>
+          )}
           <label className="text-xs text-gray-600 mt-4 block">メールアドレス</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
             placeholder="確認コードが届くアドレス" autoComplete="username" className={inputCls} />
@@ -1448,7 +1459,7 @@ function LoginScreen({ onLoggedIn }) {
             <div className="mt-1 text-xs text-amber-600">あと{8 - password.length}文字必要です</div>
           )}
           {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
-          <button onClick={startSignup} disabled={busy || !company.trim() || !email.trim() || password.length < 8}
+          <button onClick={startSignup} disabled={busy || !company.trim() || !phoneOk || !email.trim() || password.length < 8}
             className="mt-5 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium disabled:opacity-50"
           >{busy ? "送信中…" : "確認コードを送信"}</button>
           <button onClick={() => switchMode("login")}
@@ -3551,6 +3562,13 @@ ${window.location.href.split("#")[0]}
               } catch { return "記録なし"; }
             };
             const activeCount = all.filter((c) => statusOf(c).label === "利用中").length;
+            // 電話番号の読みやすい表示(保存は数字だけ。ここで区切りを入れる)
+            const fmtPhone = (p) => {
+              p = String(p || "");
+              if (p.length === 11) return p.slice(0, 3) + "-" + p.slice(3, 7) + "-" + p.slice(7);
+              if (p.length === 10) return p.slice(0, 3) + "-" + p.slice(3, 6) + "-" + p.slice(6);
+              return p;
+            };
             // 経路別の導入社数
             const bySource = {};
             all.forEach((c) => { const k = sourceOf(c); bySource[k] = (bySource[k] || 0) + 1; });
@@ -3613,6 +3631,9 @@ ${window.location.href.split("#")[0]}
                       <div className="mt-1 text-xs text-gray-500">
                         登録 {c.since} ・ {c.user_count} 人 ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
                         ・ データ {fmtBytes(Number(c.kv_bytes))}
+                        ・ 電話 {c.phone
+                          ? <a href={"tel:" + c.phone} className="text-green-800 font-medium">{fmtPhone(c.phone)}</a>
+                          : <span className="text-gray-400">未登録</span>}
                       </div>
                       <div className="mt-1 text-xs text-gray-500">
                         利用状況 — 最終利用 {c.last_seen ? String(c.last_seen).slice(0, 16) : "—"}

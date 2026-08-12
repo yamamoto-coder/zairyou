@@ -53,6 +53,18 @@ function ensure_signup_table(): void {
   // 既存の表にも流入経路の列を足す(MariaDB は IF NOT EXISTS が使える)
   try { db()->exec("ALTER TABLE signups ADD COLUMN IF NOT EXISTS source TEXT"); } catch (Throwable $e) {}
   try { db()->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS source TEXT"); } catch (Throwable $e) {}
+  // 電話番号(営業やサポートの連絡先として登録時に預かる)
+  try { db()->exec("ALTER TABLE signups ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+  try { db()->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+}
+
+// 電話番号の体裁を整える(全角→半角、区切り記号を除き、日本の番号として桁数を確かめる)
+// 保存は数字だけに統一する(表記ゆれを無くすため)。不正なら null を返す
+function normalize_phone(string $raw): ?string {
+  $s = mb_convert_kana(trim($raw), 'n');
+  $digits = preg_replace('/[^0-9]/', '', $s);
+  if (!preg_match('/^0\d{9,10}$/', $digits)) return null;
+  return $digits;
 }
 
 // 確認コードのメールを送る(ブランドデザインのHTML + 文字だけの控えを同封)
@@ -287,6 +299,10 @@ try {
       if (strlen($password) < 8) {
         respond(['error' => 'パスワードは8文字以上にしてください'], 400);
       }
+      $phone = normalize_phone((string)($in['phone'] ?? ''));
+      if ($phone === null) {
+        respond(['error' => '電話番号を確認してください(例: 090-1234-5678)'], 400);
+      }
       $db = db();
       $st = $db->prepare('SELECT id FROM users WHERE email = ?');
       $st->execute([$email]);
@@ -311,9 +327,9 @@ try {
         }
         if ($src) $source = json_encode($src, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
       }
-      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, source, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
-         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip(), $source]);
+      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, source, phone, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
+         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip(), $source, $phone]);
       if (!send_signup_mail($email, $code)) {
         respond(['error' => '確認メールを送信できませんでした。メールアドレスをご確認ください'], 500);
       }
@@ -348,7 +364,7 @@ try {
       $st->execute([$s['email']]);
       if ($st->fetch()) respond(['error' => 'このメールアドレスは登録済みです。ログインしてください'], 409);
       $db->beginTransaction();
-      $db->prepare('INSERT INTO companies (name, source) VALUES (?, ?)')->execute([$s['company'], $s['source'] ?? null]);
+      $db->prepare('INSERT INTO companies (name, source, phone) VALUES (?, ?, ?)')->execute([$s['company'], $s['source'] ?? null, $s['phone'] ?? '']);
       $companyId = (int)$db->lastInsertId();
       $db->prepare('INSERT INTO users (company_id, email, pass_hash, role) VALUES (?, ?, ?, "admin")')
          ->execute([$companyId, $s['email'], $s['pass_hash']]);
@@ -400,9 +416,9 @@ try {
         last_seen DATETIME,
         PRIMARY KEY (company_id, user_id, day)
       ) CHARACTER SET utf8mb4");
-      ensure_signup_table(); // companies.source 列の用意も兼ねる
+      ensure_signup_table(); // companies.source / phone 列の用意も兼ねる
       $st = db()->query(
-        "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source,
+        "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source, c.phone,
           (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
           (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS doc_count,
           (SELECT COALESCE(SUM(d.size), 0) FROM documents d WHERE d.company_id = c.id) AS doc_bytes,
