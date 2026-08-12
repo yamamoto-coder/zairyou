@@ -56,6 +56,9 @@ function ensure_signup_table(): void {
   // 電話番号(営業やサポートの連絡先として登録時に預かる)
   try { db()->exec("ALTER TABLE signups ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
   try { db()->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+  // 担当者名(登録時に預かる)と利用者の名前
+  try { db()->exec("ALTER TABLE signups ADD COLUMN IF NOT EXISTS person VARCHAR(60) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+  try { db()->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(60) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
 }
 
 // 電話番号の体裁を整える(全角→半角、区切り記号を除き、日本の番号として桁数を確かめる)
@@ -254,8 +257,10 @@ try {
       $st = db()->prepare('SELECT id FROM users WHERE email = ?');
       $st->execute([$email]);
       if ($st->fetch()) respond(['error' => 'このメールアドレスは登録済みです'], 409);
-      db()->prepare('INSERT INTO users (company_id, email, pass_hash, role) VALUES (?, ?, ?, ?)')
-          ->execute([$auth['company_id'], $email, password_hash($password, PASSWORD_DEFAULT), $role]);
+      ensure_signup_table(); // users.name 列の用意も兼ねる
+      $name = mb_substr(trim((string)($in['name'] ?? '')), 0, 30);
+      db()->prepare('INSERT INTO users (company_id, email, pass_hash, role, name) VALUES (?, ?, ?, ?, ?)')
+          ->execute([$auth['company_id'], $email, password_hash($password, PASSWORD_DEFAULT), $role, $name]);
       respond(['ok' => true]);
     }
 
@@ -263,7 +268,8 @@ try {
     case 'list_users': {
       $auth = require_auth();
       if ($auth['role'] !== 'admin') respond(['error' => '管理者のみ操作できます'], 403);
-      $st = db()->prepare('SELECT id, email, role, DATE(created_at) AS added_on FROM users WHERE company_id = ? ORDER BY created_at');
+      ensure_signup_table(); // users.name 列の用意も兼ねる
+      $st = db()->prepare('SELECT id, name, email, role, DATE(created_at) AS added_on FROM users WHERE company_id = ? ORDER BY created_at');
       $st->execute([$auth['company_id']]);
       respond(['ok' => true, 'users' => $st->fetchAll(), 'me' => $auth['user_id']]);
     }
@@ -337,6 +343,10 @@ try {
       if ($phone === null) {
         respond(['error' => '電話番号を確認してください(例: 090-1234-5678)'], 400);
       }
+      $person = trim((string)($in['person'] ?? ''));
+      if ($person === '' || mb_strlen($person) > 30) {
+        respond(['error' => 'お名前を入力してください(30文字以内)'], 400);
+      }
       $db = db();
       $st = $db->prepare('SELECT id FROM users WHERE email = ?');
       $st->execute([$email]);
@@ -361,9 +371,9 @@ try {
         }
         if ($src) $source = json_encode($src, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
       }
-      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, source, phone, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
-         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip(), $source, $phone]);
+      $db->prepare('INSERT INTO signups (token, company, email, pass_hash, code, ip, source, phone, person, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 20 MINUTE))')
+         ->execute([$token, $company, $email, password_hash($password, PASSWORD_DEFAULT), $code, client_ip(), $source, $phone, $person]);
       if (!send_signup_mail($email, $code)) {
         respond(['error' => '確認メールを送信できませんでした。メールアドレスをご確認ください'], 500);
       }
@@ -400,8 +410,8 @@ try {
       $db->beginTransaction();
       $db->prepare('INSERT INTO companies (name, source, phone) VALUES (?, ?, ?)')->execute([$s['company'], $s['source'] ?? null, $s['phone'] ?? '']);
       $companyId = (int)$db->lastInsertId();
-      $db->prepare('INSERT INTO users (company_id, email, pass_hash, role) VALUES (?, ?, ?, "admin")')
-         ->execute([$companyId, $s['email'], $s['pass_hash']]);
+      $db->prepare('INSERT INTO users (company_id, email, pass_hash, role, name) VALUES (?, ?, ?, "admin", ?)')
+         ->execute([$companyId, $s['email'], $s['pass_hash'], $s['person'] ?? '']);
       $userId = (int)$db->lastInsertId();
       $db->prepare('DELETE FROM signups WHERE id = ?')->execute([(int)$s['id']]);
       $authToken = bin2hex(random_bytes(32));
@@ -467,6 +477,8 @@ try {
       ensure_feedback_table();
       $st = db()->query(
         "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source, c.phone,
+          (SELECT u.name FROM users u WHERE u.company_id = c.id AND u.role = 'admin' ORDER BY u.id LIMIT 1) AS admin_name,
+          (SELECT u.email FROM users u WHERE u.company_id = c.id AND u.role = 'admin' ORDER BY u.id LIMIT 1) AS admin_email,
           (SELECT COUNT(*) FROM feedback f WHERE f.company_id = c.id) AS fb_count,
           (SELECT AVG(f.rating) FROM feedback f WHERE f.company_id = c.id) AS fb_avg,
           (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id) AS user_count,
@@ -524,6 +536,16 @@ try {
          FROM feedback ORDER BY id DESC LIMIT 500"
       );
       respond(['ok' => true, 'companies' => $companies, 'my_company' => $auth['company_id'], 'rates' => $rates, 'feedback' => $fq->fetchAll()]);
+    }
+
+    // 運営者専用: 導入社の利用者一覧(名前・メール。営業やサポートの連絡用)
+    case 'owner_company_users': {
+      $auth = require_owner();
+      ensure_signup_table(); // users.name 列の用意も兼ねる
+      $cid = (int)($in['company_id'] ?? 0);
+      $st = db()->prepare('SELECT id, name, email, role, DATE(created_at) AS added_on FROM users WHERE company_id = ? ORDER BY created_at');
+      $st->execute([$cid]);
+      respond(['ok' => true, 'users' => $st->fetchAll()]);
     }
 
     // 運営者専用: 会社をデータごと削除(自社は不可)

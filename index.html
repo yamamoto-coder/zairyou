@@ -1307,6 +1307,7 @@ function LoginScreen({ onLoggedIn }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [company, setCompany] = useState("");
+  const [person, setPerson] = useState("");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [signupToken, setSignupToken] = useState("");
@@ -1346,7 +1347,7 @@ function LoginScreen({ onLoggedIn }) {
   const phoneOk = /^0\d{9,10}$/.test(phoneDigits);
 
   const startSignup = async () => {
-    if (!company.trim() || !phoneOk || !email.trim() || password.length < 8) return;
+    if (!company.trim() || !person.trim() || !phoneOk || !email.trim() || password.length < 8) return;
     setBusy(true);
     setErr("");
     try {
@@ -1354,7 +1355,7 @@ function LoginScreen({ onLoggedIn }) {
       try { source = JSON.parse(localStorage.getItem("shizai-first-touch") || "null"); } catch {}
       const r = await api("auth.php", {
         method: "POST",
-        json: { action: "signup_start", company: company.trim(), phone: phone.trim(), email: email.trim(), password, source },
+        json: { action: "signup_start", company: company.trim(), person: person.trim(), phone: phone.trim(), email: email.trim(), password, source },
       });
       setSignupToken(r.signup_token);
       setMode("verify");
@@ -1443,6 +1444,9 @@ function LoginScreen({ onLoggedIn }) {
           <label className="text-xs text-gray-600 mt-5 block">会社名</label>
           <input type="text" value={company} onChange={(e) => setCompany(e.target.value)}
             placeholder="例: 株式会社◯◯工務店" className={inputCls} />
+          <label className="text-xs text-gray-600 mt-4 block">お名前(ご担当者さま)</label>
+          <input type="text" value={person} onChange={(e) => setPerson(e.target.value)}
+            placeholder="例: 山田 太郎" autoComplete="name" className={inputCls} />
           <label className="text-xs text-gray-600 mt-4 block">電話番号</label>
           <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
             placeholder="例: 090-1234-5678" autoComplete="tel" className={inputCls} />
@@ -1459,7 +1463,7 @@ function LoginScreen({ onLoggedIn }) {
             <div className="mt-1 text-xs text-amber-600">あと{8 - password.length}文字必要です</div>
           )}
           {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
-          <button onClick={startSignup} disabled={busy || !company.trim() || !phoneOk || !email.trim() || password.length < 8}
+          <button onClick={startSignup} disabled={busy || !company.trim() || !person.trim() || !phoneOk || !email.trim() || password.length < 8}
             className="mt-5 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium disabled:opacity-50"
           >{busy ? "送信中…" : "確認コードを送信"}</button>
           <button onClick={() => switchMode("login")}
@@ -1775,10 +1779,13 @@ function ShizaiSearch() {
   const [tenants, setTenants] = useState(null); // {companies: [...], my_company, rates}
   const [tenantQuery, setTenantQuery] = useState(""); // 会社名の絞り込み
   const [fbOpenId, setFbOpenId] = useState(null); // フィードバック本文を開いている会社ID
+  const [tnUsersOpen, setTnUsersOpen] = useState(null); // 利用者一覧を開いている会社ID
+  const [tnUsers, setTnUsers] = useState({}); // 会社ID -> 利用者一覧(取得済みのもの)
   const [referOpen, setReferOpen] = useState(false); // 同業者への紹介モーダル
   // 社員の管理(管理者のみ)
   const [staff, setStaff] = useState(null); // {users: [...], me: 自分のID}
   const [nsEmail, setNsEmail] = useState(""); // 追加フォーム
+  const [nsName, setNsName] = useState("");
   const [nsPass, setNsPass] = useState("");
   const [invite, setInvite] = useState(null); // 発行直後の案内 {email, pass, kind}
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -1888,6 +1895,20 @@ function ShizaiSearch() {
     return (b / (1024 * 1024)).toFixed(1) + " MB";
   };
 
+  // 導入社の利用者一覧を開く(初回だけサーバーへ取りに行く)
+  const toggleTenantUsers = async (c) => {
+    if (tnUsersOpen === c.id) { setTnUsersOpen(null); return; }
+    setTnUsersOpen(c.id);
+    if (!tnUsers[c.id]) {
+      try {
+        const r = await api("auth.php", { method: "POST", json: { action: "owner_company_users", company_id: c.id } });
+        setTnUsers((prev) => ({ ...prev, [c.id]: r.users || [] }));
+      } catch {
+        setTnUsers((prev) => ({ ...prev, [c.id]: [] }));
+      }
+    }
+  };
+
   const removeTenant = async (c) => {
     if (!window.confirm("導入社「" + c.name + "」を削除しますか?\n\nこの会社のアカウント・データ・書類がすべて消えます。\nこの操作は元に戻せません。")) return;
     if (!window.confirm("本当によろしいですか?\n「" + c.name + "」のデータは完全に削除されます。")) return;
@@ -1942,10 +1963,11 @@ function ShizaiSearch() {
     if (!em || nsPass.length < 8) return;
     setStaffBusy(true);
     try {
-      await api("auth.php", { method: "POST", json: { action: "add_user", email: em, password: nsPass } });
+      await api("auth.php", { method: "POST", json: { action: "add_user", email: em, password: nsPass, name: nsName.trim() } });
       setInvite({ email: em, pass: nsPass, kind: "new" });
       setInviteCopied(false);
       setNsEmail("");
+      setNsName("");
       setNsPass("");
       await reloadStaff();
     } catch (e) {
@@ -3789,12 +3811,34 @@ ${window.location.href.split("#")[0]}
                         )}
                       </div>
                       <div className="mt-1 text-xs text-gray-500">
-                        登録 {c.since} ・ {c.user_count} 人 ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
+                        登録 {c.since} ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
                         ・ データ {fmtBytes(Number(c.kv_bytes))}
                         ・ 電話 {c.phone
                           ? <a href={"tel:" + c.phone} className="text-green-800 font-medium">{fmtPhone(c.phone)}</a>
                           : <span className="text-gray-400">未登録</span>}
                       </div>
+                      <div className="mt-1 text-xs">
+                        <span className="text-gray-500">担当 — </span>
+                        <span className="font-medium text-gray-700">{c.admin_name || "名前未登録"}</span>
+                        {c.admin_email && <span className="text-gray-500">({c.admin_email})</span>}
+                        <span className="text-gray-500"> ・ </span>
+                        <button
+                          onClick={() => toggleTenantUsers(c)}
+                          className="text-green-800 underline"
+                        >利用者{c.user_count}人を{tnUsersOpen === c.id ? "閉じる" : "見る"}</button>
+                      </div>
+                      {tnUsersOpen === c.id && (
+                        <div className="mt-2 space-y-1">
+                          {(tnUsers[c.id] || []).map((u) => (
+                            <div key={u.id} className="bg-gray-50 rounded-lg px-3 py-1.5 text-xs flex flex-wrap items-center gap-x-2">
+                              <span className="font-medium text-gray-700">{u.name || "名前未登録"}</span>
+                              <span className="text-gray-500">{u.email}</span>
+                              <span className="text-gray-400">{u.role === "admin" ? "管理者" : "一般"} ・ 追加 {u.added_on}</span>
+                            </div>
+                          ))}
+                          {!tnUsers[c.id] && <div className="text-xs text-gray-400 px-3 py-1">読み込み中…</div>}
+                        </div>
+                      )}
                       <div className="mt-1 text-xs text-gray-500">
                         利用状況 — 最終利用 {c.last_seen ? String(c.last_seen).slice(0, 16) : "—"}
                         ・ 今月 {Number(c.m_actions).toLocaleString("ja-JP")} 回操作
@@ -4138,7 +4182,7 @@ ${window.location.href.split("#")[0]}
                       {staff.users.map((u) => (
                         <div key={u.id} className="flex items-center gap-2 px-3 py-2.5 text-sm">
                           <div className="min-w-0 flex-1">
-                            <div className="truncate">{u.email}</div>
+                            <div className="truncate">{u.name ? u.name + " — " : ""}{u.email}</div>
                             <div className="text-xs text-gray-400">
                               {u.role === "admin" ? "管理者" : "一般"}
                               {u.id === staff.me && " (自分)"}
@@ -4164,6 +4208,13 @@ ${window.location.href.split("#")[0]}
 
                   <div className="mt-3 bg-gray-50 rounded-xl p-3">
                     <div className="text-xs font-medium text-gray-600">社員を追加</div>
+                    <input
+                      type="text"
+                      value={nsName}
+                      onChange={(e) => setNsName(e.target.value)}
+                      placeholder="社員の名前(例: 山田 太郎)"
+                      className="mt-2 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-green-600"
+                    />
                     <input
                       type="email"
                       value={nsEmail}
