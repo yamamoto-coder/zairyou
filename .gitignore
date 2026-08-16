@@ -24,3 +24,4 @@ native/ios/capacitor-cordova-ios-plugins/
 *.cer
 *.ipa
 *.xcarchive
+docs/appstore/screenshots/

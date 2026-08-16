@@ -16,7 +16,11 @@
 
 ## アプリのアドレス
 
-<https://yamamoto-coder.github.io/zairyou/>
+<https://tonyasan.jp/>(自社ドメイン)/ <https://yamamoto-coder.github.io/zairyou/>(GitHub Pages)
+
+iPhone / iPad 用のアプリ版(App Store)は `native/` にあります。
+提出手順は [docs/appstore/README.md](docs/appstore/README.md) を参照してください。
+プライバシーポリシー: <https://tonyasan.jp/privacy.html>
 
 GitHub Pages で配信しています。
 `main` ブランチに push すると1〜2分で反映されます。

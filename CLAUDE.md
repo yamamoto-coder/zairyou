@@ -20,9 +20,23 @@
 | 公開 URL | <https://yamamoto-coder.github.io/zairyou/> |
 | ブランチ | `main`(`/(root)` を GitHub Pages が配信) |
 
-このマシンには `gh` CLI が入っていません。
-リポジトリと Pages の設定はユーザーが GitHub の Web UI で済ませてあるため、Claude Code 側は素の `git` だけで完結します。
-push は Git Credential Manager に保存済みの資格情報で通ります。
+リポジトリと Pages の設定はユーザーが GitHub の Web UI で済ませてあるため、Claude Code 側は素の `git` だけで完結します
+(Mac には `gh` CLI も入っています)。push は保存済みの資格情報で通ります。
+Mac 上の作業コピーは `~/Desktop/開発アプリ/zairyou`。
+
+## 自社ドメインと iOS アプリ(2026-08-17 追加)
+
+| 項目 | 値 |
+| --- | --- |
+| 本番 URL | <https://tonyasan.jp/>(Xserver。同じ `index.html` を手動アップロード。API は `api/` 配下) |
+| プライバシーポリシー | `privacy.html` → <https://tonyasan.jp/privacy.html> |
+| iOS アプリ | `native/`(Capacitor 8・SPM)。WKWebView が `https://tonyasan.jp/` を読み込む薄い殻。Bundle ID `jp.tonyasan.app` |
+| 提出手順 | `docs/appstore/README.md`(掲載文・審査メモ・プライバシー回答も同フォルダ) |
+
+- `index.html` は `window.Capacitor` を検出したときだけ共有シート等を使う(`NATIVE_APP`)。ブラウザの動きは変えない。
+- ネイティブ側(`native/capacitor.config.ts`・`Info.plist`・アイコン)を変えたら Version/Build を上げて再提出。Web 側だけの変更は再提出不要。
+- `native/ios/App/App/Info.plist` のカメラ・写真の用途文言と `ITSAppUsesNonExemptEncryption=false` を消さない。
+- 署名材料(証明書・プロビジョニング・.p12)は絶対にコミットしない(`.gitignore` 済み)。
 
 ## 想定タスク
 
