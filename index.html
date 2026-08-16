@@ -104,6 +104,60 @@ async function api(path, { method = "GET", json, form, raw } = {}) {
   return data;
 }
 
+// ============================================================
+// iOS アプリ(Capacitor の殻)から開かれているときのネイティブ連携
+//  アプリ側が window.Capacitor を注入するので、それが無ければ従来どおり Web として動く。
+//  ブラウザ版の動きは一切変えない(すべての関数が「ネイティブでなければ false を返す」)。
+// ============================================================
+const NATIVE_APP = (() => {
+  try {
+    const c = window.Capacitor;
+    return !!(c && typeof c.isNativePlatform === "function" && c.isNativePlatform() && typeof c.nativePromise === "function");
+  } catch { return false; }
+})();
+const nativeCall = (plugin, method, options) => window.Capacitor.nativePromise(plugin, method, options || {});
+// 文章を端末の共有シート(LINE・メール・メモなど)へ渡す。共有をやめても false にはしない
+async function nativeShareText(text, title) {
+  if (!NATIVE_APP) return false;
+  try { await nativeCall("Share", "share", { title: title || "", text, dialogTitle: title || "共有" }); } catch (e) { /* キャンセル */ }
+  return true;
+}
+// ブラウザの「ダウンロード」の代わりに、ファイルをアプリの一時領域へ書いて共有シートで
+// 「ファイルに保存」やメール添付などができるようにする。content は文字列(JSON など)か Blob
+async function nativeShareFile(filename, content, mime) {
+  if (!NATIVE_APP) return false;
+  try {
+    let opts;
+    if (typeof content === "string") {
+      opts = { path: filename, data: content, directory: "CACHE", encoding: "utf8", recursive: true };
+    } else {
+      const b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+        fr.onerror = () => reject(fr.error);
+        fr.readAsDataURL(content);
+      });
+      opts = { path: filename, data: b64, directory: "CACHE", recursive: true };
+    }
+    const w = await nativeCall("Filesystem", "writeFile", opts);
+    await nativeCall("Share", "share", { title: filename, files: [w.uri], dialogTitle: filename });
+  } catch (e) {
+    // キャンセルは黙って戻る。それ以外だけ知らせる
+    const msg = String((e && e.message) || e || "");
+    if (msg && !/cancel/i.test(msg)) window.alert("ファイルを共有できませんでした: " + msg);
+  }
+  return true;
+}
+// ブラウザ向けの <a download> を、ネイティブでは共有シートに置き換える共通入口
+function saveOrShareBlob(blob, filename) {
+  if (NATIVE_APP) { nativeShareFile(filename, blob, blob.type); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 window.storage = {
   async get(key, shared) {
     if (auth.on) {
@@ -1636,6 +1690,11 @@ function ReferralShare({ account, onClose }) {
         <button onClick={() => window.open("https://line.me/R/share?text=" + encodeURIComponent(text), "_blank")}
           className="mt-4 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium"
         >LINEで送る</button>
+        {NATIVE_APP && (
+          <button onClick={() => nativeShareText(text, "問屋さんを紹介")}
+            className="mt-2 w-full text-green-800 bg-white hover:bg-green-50 border border-green-300 rounded-xl py-3 font-medium"
+          >他のアプリで共有…</button>
+        )}
         <button onClick={copy}
           className="mt-2 w-full text-green-800 bg-green-50 hover:bg-green-100 border border-green-200 rounded-xl py-3 font-medium"
         >{copied ? "コピーしました" : "文面をコピー(メール・チャット用)"}</button>
@@ -2445,11 +2504,7 @@ function ShizaiSearch() {
         // GitHub版はサーバーが無いため、担当者へ返送する添付ファイルも書き出す
         const newSubs = box.slice(-files.length);
         const blob = new Blob([JSON.stringify(newSubs, null, 2)], { type: "application/json" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "料金表_" + (supName || "仕入先") + "_" + new Date().toISOString().slice(0, 10) + ".json";
-        a.click();
-        URL.revokeObjectURL(a.href);
+        saveOrShareBlob(blob, "料金表_" + (supName || "仕入先") + "_" + new Date().toISOString().slice(0, 10) + ".json");
         setSupDone({ ok: true, count: total });
       } catch {
         setSupDone({ ok: false });
@@ -2802,6 +2857,12 @@ function ShizaiSearch() {
     recordOrderAddress();
     recordOrderHistory("LINE");
     window.open("https://line.me/R/share?text=" + encodeURIComponent(orderText), "_blank");
+  };
+  // iOS アプリでは端末の共有シート(LINE・メール・メッセージなど)から送れる
+  const shareOrder = () => {
+    recordOrderAddress();
+    recordOrderHistory("共有");
+    nativeShareText(orderText, "発注の依頼文");
   };
   const mailOrder = () => {
     recordOrderAddress();
@@ -4526,11 +4587,7 @@ ${window.location.href.split("#")[0]}
               onClick={() => {
                 const data = { invoices, pricelists, exported_at: new Date().toISOString() };
                 const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(blob);
-                a.download = "問屋さんバックアップ_" + new Date().toISOString().slice(0, 10) + ".json";
-                a.click();
-                URL.revokeObjectURL(a.href);
+                saveOrShareBlob(blob, "問屋さんバックアップ_" + new Date().toISOString().slice(0, 10) + ".json");
               }}
               className="text-xs text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-full px-3 py-1"
             >書き出す</button>
@@ -4765,6 +4822,13 @@ ${window.location.href.split("#")[0]}
                   className="text-sm text-white rounded-full px-4 py-2 disabled:opacity-50"
                   style={{ background: "#06C755" }}
                 >LINEで送る</button>
+                {NATIVE_APP && (
+                  <button
+                    onClick={shareOrder}
+                    disabled={!orderValid}
+                    className="text-sm text-green-800 border border-green-300 hover:bg-green-50 rounded-full px-4 py-2 disabled:opacity-50"
+                  >共有…</button>
+                )}
                 <button
                   onClick={mailOrder}
                   disabled={!orderValid}
@@ -4817,7 +4881,21 @@ ${window.location.href.split("#")[0]}
                   ) : (
                     <img src={d.url} alt={d.name} className="max-w-full rounded-lg border border-gray-200" />
                   )}
-                  <a href={d.url} download={d.name} className="inline-block mt-1.5 text-xs text-green-800 hover:underline">ダウンロード</a>
+                  {NATIVE_APP ? (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const blob = await (await fetch(d.url)).blob();
+                          nativeShareFile(d.name || "書類", blob, d.mime || blob.type);
+                        } catch (e) {
+                          window.alert("書類を取り出せませんでした: " + ((e && e.message) || ""));
+                        }
+                      }}
+                      className="inline-block mt-1.5 text-xs text-green-800 hover:underline"
+                    >共有・保存…</button>
+                  ) : (
+                    <a href={d.url} download={d.name} className="inline-block mt-1.5 text-xs text-green-800 hover:underline">ダウンロード</a>
+                  )}
                 </div>
               ))}
             </div>
