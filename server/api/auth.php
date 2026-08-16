@@ -1,7 +1,7 @@
 <?php
 // ログイン・会社/ユーザー管理・新規登録(メール認証)
 // POST auth.php {action: "setup"|"login"|"logout"|"me"|"add_user"|"change_password"
-//                        |"signup_start"|"signup_verify"|"signup_resend", ...}
+//                        |"signup_start"|"signup_verify"|"signup_resend"|"delete_account", ...}
 declare(strict_types=1);
 require __DIR__ . '/common.php';
 
@@ -450,6 +450,71 @@ try {
       db()->prepare('INSERT INTO feedback (company_id, user_id, email, rating, good, request) VALUES (?, ?, ?, ?, ?, ?)')
           ->execute([$auth['company_id'], $auth['user_id'], $auth['email'], $rating, $good, $request]);
       respond(['ok' => true]);
+    }
+
+    // 自分のアカウントを削除する(本人のみ・パスワードの再入力が必要)
+    // App Store の規約(5.1.1)により、登録できるアプリは本人が削除もできる必要がある。
+    // 会社に他の社員が残っていればアカウントだけ消す。自分が最後の1人なら
+    // 会社と会社に貯めたデータ(明細・書類・利用記録)もすべて消す。
+    case 'delete_account': {
+      $auth = require_auth();
+      $password = (string)($in['password'] ?? '');
+      $db = db();
+      $st = $db->prepare('SELECT pass_hash FROM users WHERE id = ?');
+      $st->execute([$auth['user_id']]);
+      $u = $st->fetch();
+      if (!$u || !password_verify($password, $u['pass_hash'])) {
+        respond(['error' => 'パスワードが違います'], 401);
+      }
+      $cid = $auth['company_id'];
+      $st = $db->prepare('SELECT COUNT(*) AS c FROM users WHERE company_id = ?');
+      $st->execute([$cid]);
+      $others = (int)$st->fetch()['c'] - 1;
+      if ($others > 0) {
+        $db->beginTransaction();
+        $promoted = '';
+        // 自分が唯一の管理者なら、会社が管理者不在にならないよう
+        // いちばん古い社員を管理者に引き上げてから抜ける
+        if ($auth['role'] === 'admin') {
+          $st = $db->prepare('SELECT COUNT(*) AS c FROM users WHERE company_id = ? AND role = "admin" AND id <> ?');
+          $st->execute([$cid, $auth['user_id']]);
+          if ((int)$st->fetch()['c'] === 0) {
+            $st = $db->prepare('SELECT id, email FROM users WHERE company_id = ? AND id <> ? ORDER BY created_at, id LIMIT 1');
+            $st->execute([$cid, $auth['user_id']]);
+            $next = $st->fetch();
+            if ($next) {
+              $db->prepare('UPDATE users SET role = "admin" WHERE id = ?')->execute([(int)$next['id']]);
+              $promoted = $next['email'];
+            }
+          }
+        }
+        $db->prepare('DELETE FROM tokens WHERE user_id = ?')->execute([$auth['user_id']]);
+        $db->prepare('DELETE FROM users WHERE id = ?')->execute([$auth['user_id']]);
+        $db->commit();
+        respond(['ok' => true, 'company_removed' => false, 'promoted' => $promoted]);
+      }
+      // 最後の1人: 会社ごとすべて削除(運営会社の場合は消さない)
+      if (is_owner_company($cid)) {
+        respond(['error' => '運営会社のアカウントはここからは削除できません'], 400);
+      }
+      $st = $db->prepare('SELECT path FROM documents WHERE company_id = ?');
+      $st->execute([$cid]);
+      foreach ($st->fetchAll() as $r) {
+        $full = rtrim(FILES_DIR, '/') . '/' . $r['path'];
+        $real = realpath($full);
+        $base = realpath(FILES_DIR);
+        if ($real !== false && $base !== false && strpos($real, $base) === 0) @unlink($real);
+      }
+      @rmdir(rtrim(FILES_DIR, '/') . '/' . $cid);
+      $db->prepare('DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)')->execute([$cid]);
+      $db->prepare('DELETE FROM documents WHERE company_id = ?')->execute([$cid]);
+      $db->prepare('DELETE FROM kv_data WHERE company_id = ?')->execute([$cid]);
+      foreach (['feedback', 'activity_log', 'api_usage'] as $tbl) {
+        try { $db->prepare("DELETE FROM {$tbl} WHERE company_id = ?")->execute([$cid]); } catch (Throwable $e) {}
+      }
+      $db->prepare('DELETE FROM users WHERE company_id = ?')->execute([$cid]);
+      $db->prepare('DELETE FROM companies WHERE id = ?')->execute([$cid]);
+      respond(['ok' => true, 'company_removed' => true]);
     }
 
     // 運営者専用: 導入している会社の一覧(件数と利用状況のみ。中身は返さない)

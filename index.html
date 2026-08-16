@@ -1790,6 +1790,10 @@ function ShizaiSearch() {
   const [invite, setInvite] = useState(null); // 発行直後の案内 {email, pass, kind}
   const [inviteCopied, setInviteCopied] = useState(false);
   const [staffBusy, setStaffBusy] = useState(false);
+  // アカウントの削除(本人のみ)
+  const [delOpen, setDelOpen] = useState(false);
+  const [delPass, setDelPass] = useState("");
+  const [delBusy, setDelBusy] = useState(false);
   const [view, setView] = useState("home"); // home | results | detail | manage | supplier
   const [query, setQuery] = useState("");
   const [committed, setCommitted] = useState("");
@@ -2006,6 +2010,31 @@ function ShizaiSearch() {
     setInvoices([]); setPricelists([]); setInbox([]); setCart([]); setOrderLog([]);
     setView("home");
   }, []);
+
+  // 自分のアカウントを削除する。会社に自分しかいなければ会社のデータごと消える
+  const deleteAccount = async () => {
+    if (!delPass) return;
+    if (!window.confirm(
+      "本当にアカウントを削除しますか?\n\n" +
+      "あなたはログインできなくなります。\n" +
+      "会社に登録されているのがあなただけの場合は、会社に貯めた明細・書類・発注履歴などのデータもすべて削除されます。\n" +
+      "この操作は取り消せません。"
+    )) return;
+    setDelBusy(true);
+    try {
+      const r = await api("auth.php", { method: "POST", json: { action: "delete_account", password: delPass } });
+      auth.token = "";
+      window.alert(
+        r && r.company_removed
+          ? "アカウントと会社のデータを削除しました。ご利用ありがとうございました。"
+          : "アカウントを削除しました。ご利用ありがとうございました。"
+      );
+      location.reload();
+    } catch (e) {
+      window.alert("削除できませんでした: " + ((e && e.message) || ""));
+      setDelBusy(false);
+    }
+  };
 
   useEffect(() => {
     // サーバー保存の場合はログイン後に読み込む
@@ -4312,6 +4341,46 @@ ${window.location.href.split("#")[0]}
                     <span className="font-medium">そちらの画面を開いてログインし、この欄から引き継ぎ</span>
                     を行ってください。同じ操作を何度行っても、データが二重になることはありません。
                   </p>
+                )}
+              </div>
+
+              {/* アカウントの削除(本人のみ) */}
+              <div className="mt-4 pt-4 border-t border-gray-100">
+                <h3 className="text-sm font-medium">アカウントの削除</h3>
+                <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+                  ご自身のアカウント({account.email})を削除します。
+                  会社に他の社員が残っている場合はあなたのアカウントだけが消え、会社のデータは残ります。
+                  会社に登録されているのがあなただけの場合は、明細・書類・発注履歴など会社のデータもすべて削除されます。
+                </p>
+                {!delOpen ? (
+                  <button
+                    onClick={() => { setDelOpen(true); setDelPass(""); }}
+                    className="mt-3 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded px-4 py-1.5"
+                  >アカウントを削除する…</button>
+                ) : (
+                  <div className="mt-3 border border-red-200 bg-red-50 rounded-xl p-3">
+                    <div className="text-xs font-medium text-red-800">確認のため、現在のパスワードを入力してください</div>
+                    <input
+                      type="password"
+                      value={delPass}
+                      onChange={(e) => setDelPass(e.target.value)}
+                      placeholder="現在のパスワード"
+                      autoComplete="current-password"
+                      className="mt-2 w-full border border-red-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-red-500 bg-white"
+                    />
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={deleteAccount}
+                        disabled={delBusy || !delPass}
+                        className="flex-1 text-sm text-white bg-red-600 hover:bg-red-700 disabled:bg-gray-300 rounded-lg py-2"
+                      >{delBusy ? "削除しています…" : "アカウントを完全に削除する"}</button>
+                      <button
+                        onClick={() => { setDelOpen(false); setDelPass(""); }}
+                        disabled={delBusy}
+                        className="text-sm text-gray-600 border border-gray-200 bg-white hover:bg-gray-50 rounded-lg px-4 py-2"
+                      >やめる</button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
