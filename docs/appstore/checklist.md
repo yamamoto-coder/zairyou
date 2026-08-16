@@ -5,9 +5,9 @@
 ## Web 側(本番反映)
 
 - [ ] `git push origin main` 済み(GitHub Pages が最新)
-- [ ] tonyasan.jp に `index.html` / `privacy.html` / `sitemap.xml` / `lp/index.html` / `api/auth.php` をアップロード済み
-- [ ] <https://tonyasan.jp/privacy.html> が開く
-- [ ] ログイン画面下に「プライバシーポリシー」リンクが見える
+- [ ] tonyasan.jp に `index.html` / `privacy.html` / `terms.html` / `sitemap.xml` / `lp/index.html` / `api/auth.php` をアップロード済み
+- [ ] <https://tonyasan.jp/privacy.html> と <https://tonyasan.jp/terms.html> が開く
+- [ ] ログイン画面下に「利用規約・プライバシーポリシー」、登録画面に同意文が見える
 - [ ] 設定 → アカウント →「アカウントの削除」が動く(テスト会社で実施)
 - [ ] 実機アプリで 取り込み(カメラ)/ 検索 / 発注の共有 / バックアップ書き出し が動く
 - [ ] 機内モードで「インターネットに接続できません」画面 → 復帰で戻る

@@ -29,7 +29,7 @@ Mac 上の作業コピーは `~/Desktop/開発アプリ/zairyou`。
 | 項目 | 値 |
 | --- | --- |
 | 本番 URL | <https://tonyasan.jp/>(Xserver。同じ `index.html` を手動アップロード。API は `api/` 配下) |
-| プライバシーポリシー | `privacy.html` → <https://tonyasan.jp/privacy.html> |
+| プライバシーポリシー / 利用規約 | `privacy.html` / `terms.html` → <https://tonyasan.jp/privacy.html> / <https://tonyasan.jp/terms.html> |
 | iOS アプリ | `native/`(Capacitor 8・SPM)。WKWebView が `https://tonyasan.jp/` を読み込む薄い殻。Bundle ID `jp.tonyasan.app` |
 | 提出手順 | `docs/appstore/README.md`(掲載文・審査メモ・プライバシー回答も同フォルダ) |
 

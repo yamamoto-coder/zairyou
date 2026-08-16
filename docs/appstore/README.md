@@ -45,6 +45,7 @@ App Store に「問屋さん」として出すための手順。
 | `index.html` — 設定 → アカウントに「アカウントの削除」を追加 | App Store 審査ガイドライン 5.1.1(v)。アプリ内で登録できるなら削除もできる必要がある |
 | `server/api/auth.php` — `delete_account` の処理を追加 | 上の削除ボタンの受け口 |
 | `privacy.html`(新規)+ ログイン/登録/設定/LP からのリンク | プライバシーポリシーの公開 URL は提出時の必須項目 |
+| `terms.html`(新規)+ 登録画面の同意文・各所のリンク | 審査必須ではないが、AI 読み取りの免責・禁止事項・サービス終了などを定めて会社を守るため |
 | `index.html` — iOS アプリから開いたときだけ共有シート・ファイル保存を使う | WKWebView ではブラウザの「ダウンロード」が動かないため |
 
 ### 1-1. GitHub Pages(自動)
@@ -63,13 +64,14 @@ Xserver のファイルマネージャ(または FTP)で、`tonyasan.jp` の公�
 | --- | --- |
 | `index.html` | `index.html` |
 | `privacy.html` | `privacy.html` |
+| `terms.html` | `terms.html` |
 | `sitemap.xml` | `sitemap.xml` |
 | `lp/index.html` | `lp/index.html` |
 | `server/api/auth.php` | `api/auth.php` |
 
 確認:
 
-- <https://tonyasan.jp/privacy.html> が開く
+- <https://tonyasan.jp/privacy.html> と <https://tonyasan.jp/terms.html> が開く
 - <https://tonyasan.jp/> のログイン画面の下に「プライバシーポリシー」リンクが出る
 - ログイン → データ管理 → アカウント の一番下に「アカウントの削除」が出る
 - 動作確認用の会社を1つ作って実際に削除できる(社員が自分だけなら会社ごと消える)
@@ -144,6 +146,7 @@ cd ~/Desktop/開発アプリ/zairyou/native/ios/App && xcodebuild -project App.x
 - サブタイトル・カテゴリ(**ビジネス** / 補助: 仕事効率化)・コンテンツ権利(第三者コンテンツなし)
 - **年齢制限指定** → 質問にすべて「なし」→ 4+
 - **プライバシーポリシー URL**: `https://tonyasan.jp/privacy.html`
+- 使用許諾契約(EULA): 既定の Apple 標準 EULA のままでよい(独自の利用規約はアプリ内リンクで示す。ASC の「カスタム使用許諾契約」に `terms.html` の本文を貼る必要はない)
 
 ### 4-2. 価格および配信状況
 
