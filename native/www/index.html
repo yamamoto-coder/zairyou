@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>問屋さん</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #ffffff; color: #1f2937;
+    font-family: 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', sans-serif; }
+  .wrap { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; box-sizing: border-box; text-align: center;
+    padding-top: calc(24px + env(safe-area-inset-top)); padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+  .logo { display: grid; grid-template-columns: 1fr 1fr; width: 96px; height: 96px; border-radius: 22px; overflow: hidden; }
+  .logo span { display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; font-size: 30px; }
+  h1 { font-size: 18px; margin: 20px 0 8px; }
+  p { font-size: 14px; line-height: 1.8; color: #6b7280; margin: 0 0 20px; max-width: 320px; }
+  button { font: inherit; font-size: 15px; font-weight: 600; color: #fff; background: #15803d; border: 0;
+    border-radius: 12px; padding: 12px 28px; }
+  button:active { background: #166534; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo" aria-hidden="true">
+    <span style="background:#4285F4">問</span><span style="background:#EA4335">屋</span>
+    <span style="background:#FBBC05">さ</span><span style="background:#34A853">ん</span>
+  </div>
+  <h1>インターネットに接続できません</h1>
+  <p>問屋さんはサーバー上のデータを表示するため、通信が必要です。電波の届く場所で、もう一度お試しください。</p>
+  <button onclick="location.replace('https://tonyasan.jp/')">再読み込み</button>
+</div>
+<script>
+  // 通信が戻ったら自動で本番に戻る
+  window.addEventListener('online', function () { location.replace('https://tonyasan.jp/'); });
+</script>
+</body>
+</html>

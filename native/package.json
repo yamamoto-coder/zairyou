@@ -1,0 +1,26 @@
+{
+  "name": "tonyasan-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "問屋さん iOS アプリ(Capacitor の薄い殻。画面本体は https://tonyasan.jp/ を読み込む)",
+  "scripts": {
+    "add:ios": "cap add ios --packagemanager SPM",
+    "sync": "cap sync ios",
+    "open": "cap open ios",
+    "assets": "capacitor-assets generate --ios --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#111827' --splashBackgroundColor '#ffffff' --splashBackgroundColorDark '#111827'"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.0.0",
+    "@capacitor/share": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "typescript": "^7.0.2"
+  }
+}

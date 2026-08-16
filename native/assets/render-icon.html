@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><title>icon render</title></head>
+<body style="margin:0;background:#eee">
+<canvas id="icon" width="1024" height="1024"></canvas>
+<canvas id="splash" width="2732" height="2732"></canvas>
+<script>
+// アイコン: 4色タイル + 白抜き文字(既存 icon-512.png と同じ構図を 1024px で描き直す)
+function drawTiles(ctx, x, y, size, radius) {
+  const half = size / 2;
+  const cols = [['#4285F4', '問'], ['#EA4335', '屋'], ['#FBBC05', 'さ'], ['#34A853', 'ん']];
+  ctx.save();
+  if (radius > 0) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, size, size, radius);
+    ctx.clip();
+  }
+  cols.forEach(([c, ch], i) => {
+    const cx = x + (i % 2) * half, cy = y + Math.floor(i / 2) * half;
+    ctx.fillStyle = c;
+    ctx.fillRect(cx, cy, half, half);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold ' + Math.round(half * 0.72) + 'px "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ch, cx + half / 2, cy + half / 2 + half * 0.03);
+  });
+  ctx.restore();
+}
+const ic = document.getElementById('icon').getContext('2d');
+drawTiles(ic, 0, 0, 1024, 0); // App Store 用は角丸なし(OS が丸める)
+
+const sp = document.getElementById('splash').getContext('2d');
+sp.fillStyle = '#ffffff';
+sp.fillRect(0, 0, 2732, 2732);
+drawTiles(sp, (2732 - 560) / 2, (2732 - 560) / 2, 560, 120);
+</script>
+</body></html>

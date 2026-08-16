@@ -8,3 +8,19 @@ backup*.json
 
 # サーバーの実設定(DBパスワード・AIキー入り)は絶対にコミットしない
 server/api/config.php
+
+# iOS アプリ(native/)の生成物・依存。署名材料も絶対にコミットしない
+native/node_modules/
+native/ios/App/build/
+native/ios/App/DerivedData/
+native/ios/App/output/
+native/ios/App/App/public/
+native/ios/App/App/capacitor.config.json
+native/ios/App/App/config.xml
+native/ios/capacitor-cordova-ios-plugins/
+**/xcuserdata/
+*.mobileprovision
+*.p12
+*.cer
+*.ipa
+*.xcarchive
