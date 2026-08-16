@@ -1431,6 +1431,11 @@ function LoginScreen({ onLoggedIn }) {
             データは会社ごとにサーバーへ保存され、社内の全員で共有されます。
             社内のアカウントが分からない場合は、貴社の管理者にご確認ください。
           </p>
+          <p className="mt-3 text-center text-xs text-gray-400">
+            <a href="privacy.html" target="_blank" rel="noopener" className="hover:underline">プライバシーポリシー</a>
+            <span className="mx-2">・</span>
+            運営: 株式会社KYOEI
+          </p>
         </div>
       )}
 
@@ -1463,8 +1468,11 @@ function LoginScreen({ onLoggedIn }) {
             <div className="mt-1 text-xs text-amber-600">あと{8 - password.length}文字必要です</div>
           )}
           {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
+          <p className="mt-4 text-xs text-gray-500 leading-relaxed">
+            登録することで、<a href="privacy.html" target="_blank" rel="noopener" className="text-green-800 underline">プライバシーポリシー</a>に同意したものとみなします。
+          </p>
           <button onClick={startSignup} disabled={busy || !company.trim() || !person.trim() || !phoneOk || !email.trim() || password.length < 8}
-            className="mt-5 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium disabled:opacity-50"
+            className="mt-3 w-full text-white bg-green-700 hover:bg-green-800 rounded-xl py-3 font-medium disabled:opacity-50"
           >{busy ? "送信中…" : "確認コードを送信"}</button>
           <button onClick={() => switchMode("login")}
             className="mt-3 w-full text-sm text-gray-500 hover:text-gray-700 py-2"
@@ -4175,6 +4183,7 @@ ${window.location.href.split("#")[0]}
               <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
                 データは会社ごとにサーバーへ保存され、社内の全員で共有されます。
                 パソコンを変えても同じデータが見られます。
+                情報の取り扱いは<a href="privacy.html" target="_blank" rel="noopener" className="text-green-800 underline">プライバシーポリシー</a>をご覧ください。
               </p>
               <div className="mt-3">
                 <button
