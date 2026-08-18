@@ -19,6 +19,27 @@ $provider = isset($in->provider) ? (string)$in->provider : '';
 $body = $in->body ?? null;
 if (!is_object($body)) respond(['error' => 'リクエスト本文がありません'], 400);
 
+// 利用の種別: 画像やPDF(base64)を含む呼び出しは「読み取り」、それ以外は「AI検索」
+$kind = (strpos($raw, 'inline_data') !== false || strpos($raw, 'inlineData') !== false
+      || strpos($raw, '"base64"') !== false) ? 'read' : 'search';
+
+// 料金プランの制限(config.php の PLAN_ENFORCE が true のときだけ働く)
+if (plan_enforced()) {
+  $plan = plan_info($auth['company_id']);
+  if ($kind === 'read' && $plan['reads_limit'] > 0 && $plan['reads_used'] >= $plan['reads_limit']) {
+    respond([
+      'error' => '今月の無料の読み取り枠(' . $plan['reads_limit'] . '枚)を使い切りました。経営パックなら無制限で読み取れます。',
+      'code' => 'plan_limit',
+    ], 402);
+  }
+  if ($kind === 'search' && !$plan['ai_search']) {
+    respond([
+      'error' => 'AI検索は経営パックの機能です。キーワード検索は引き続き無料でお使いいただけます。',
+      'code' => 'plan_ai_search',
+    ], 402);
+  }
+}
+
 // 中継先はこの2つだけ。任意URLへの転送は絶対にしない(SSRF対策)
 try {
   if ($provider === 'gemini') {
@@ -76,11 +97,13 @@ try {
         company_id INT NOT NULL,
         provider VARCHAR(20) NOT NULL,
         model VARCHAR(80) NOT NULL DEFAULT '',
+        kind VARCHAR(10) NOT NULL DEFAULT '',
         prompt_tokens INT NOT NULL DEFAULT 0,
         output_tokens INT NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_company_time (company_id, created_at)
       ) CHARACTER SET utf8mb4");
+      ensure_plan_support(); // 既存の表にも kind 列を足す
       $data = json_decode($res, true);
       $pin = 0; $pout = 0; $usedModel = '';
       if ($provider === 'gemini' && isset($data['usageMetadata'])) {
@@ -94,8 +117,8 @@ try {
         $usedModel = (string)($data['model'] ?? '');
       }
       if ($pin > 0 || $pout > 0) {
-        $st = db()->prepare('INSERT INTO api_usage (company_id, provider, model, prompt_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)');
-        $st->execute([$auth['company_id'], $provider, substr($usedModel, 0, 80), $pin, $pout]);
+        $st = db()->prepare('INSERT INTO api_usage (company_id, provider, model, kind, prompt_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?)');
+        $st->execute([$auth['company_id'], $provider, substr($usedModel, 0, 80), $kind, $pin, $pout]);
       }
     } catch (Throwable $e) {
       error_log('[tonya-api ai] usage log: ' . $e->getMessage());

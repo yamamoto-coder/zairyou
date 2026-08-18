@@ -235,7 +235,7 @@ try {
       $token = bin2hex(random_bytes(32));
       $st = db()->prepare('INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ' . (int)TOKEN_DAYS . ' DAY))');
       $st->execute([$token, (int)$u['id']]);
-      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'company_id' => (int)$u['company_id'], 'owner' => is_owner_company((int)$u['company_id']), 'feedback_due' => feedback_due((int)$u['company_id'])]);
+      respond(['ok' => true, 'token' => $token, 'email' => $email, 'role' => $u['role'], 'company' => $u['company_name'], 'company_id' => (int)$u['company_id'], 'owner' => is_owner_company((int)$u['company_id']), 'feedback_due' => feedback_due((int)$u['company_id']), 'plan' => plan_info((int)$u['company_id'])]);
     }
 
     case 'logout': {
@@ -252,7 +252,7 @@ try {
       $st = db()->prepare('SELECT name FROM companies WHERE id = ?');
       $st->execute([$auth['company_id']]);
       $c = $st->fetch();
-      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'company_id' => $auth['company_id'], 'owner' => is_owner_company($auth['company_id']), 'feedback_due' => feedback_due($auth['company_id'])]);
+      respond(['ok' => true, 'email' => $auth['email'], 'role' => $auth['role'], 'company' => $c ? $c['name'] : '', 'company_id' => $auth['company_id'], 'owner' => is_owner_company($auth['company_id']), 'feedback_due' => feedback_due($auth['company_id']), 'plan' => plan_info($auth['company_id'])]);
     }
 
     // 同じ会社にユーザーを追加(管理者のみ)
@@ -558,8 +558,10 @@ try {
       ) CHARACTER SET utf8mb4");
       ensure_signup_table(); // companies.source / phone 列の用意も兼ねる
       ensure_feedback_table();
+      ensure_plan_support(); // companies.plan / api_usage.kind 列の用意
       $st = db()->query(
-        "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source, c.phone,
+        "SELECT c.id, c.name, DATE(c.created_at) AS since, c.source, c.phone, c.plan,
+          (SELECT COUNT(*) FROM api_usage a WHERE a.company_id = c.id AND a.kind = 'read' AND a.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS m_reads,
           (SELECT u.name FROM users u WHERE u.company_id = c.id AND u.role = 'admin' ORDER BY u.id LIMIT 1) AS admin_name,
           (SELECT u.email FROM users u WHERE u.company_id = c.id AND u.role = 'admin' ORDER BY u.id LIMIT 1) AS admin_email,
           (SELECT COUNT(*) FROM feedback f WHERE f.company_id = c.id) AS fb_count,

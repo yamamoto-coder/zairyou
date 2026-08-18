@@ -157,3 +157,65 @@ function record_login_failure(): void {
   $st->execute([client_ip()]);
   db()->exec("DELETE FROM login_attempts WHERE attempted_at < DATE_SUB(NOW(), INTERVAL 1 DAY)");
 }
+
+// ---- 料金プラン(課金戦略書 第3版) ----
+// plan 列: '' または 'free' = フリー / 'paid' = 経営パック /
+//          'founder' = 創業メンバー特典(2026-08-19 より前に登録した会社。経営パック相当)
+// 制限の実施は config.php の PLAN_ENFORCE(未定義なら停止)。
+// 停止中も利用種別(kind)の記録だけは行い、公開時に切り替えられるようにする。
+
+function plan_enforced(): bool {
+  return defined('PLAN_ENFORCE') && PLAN_ENFORCE;
+}
+
+// プラン関連の列を用意する(何度呼んでも安全)
+function ensure_plan_support(): void {
+  try { db()->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan VARCHAR(20) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+  try { db()->exec("ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
+  // 既存の導入社は創業メンバー(戦略書の特典対象)として印を付ける
+  try {
+    db()->exec("UPDATE companies SET plan = 'founder' WHERE plan = '' AND created_at < '2026-08-19'");
+  } catch (Throwable $e) {}
+}
+
+// 会社のプラン状況を返す
+// ['plan','is_premium','in_trial','trial_until','reads_used','reads_limit','ai_search']
+//   reads_limit: 0 = 無制限
+function plan_info(int $companyId): array {
+  $info = [
+    'plan' => 'free', 'is_premium' => false, 'in_trial' => false, 'trial_until' => null,
+    'reads_used' => 0, 'reads_limit' => 0, 'ai_search' => true, 'enforced' => plan_enforced(),
+  ];
+  try {
+    ensure_plan_support();
+    $st = db()->prepare(
+      "SELECT plan, DATE(DATE_ADD(created_at, INTERVAL 30 DAY)) AS trial_until,
+              (created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)) AS in_trial
+       FROM companies WHERE id = ?"
+    );
+    $st->execute([$companyId]);
+    $c = $st->fetch();
+    if (!$c) return $info;
+    $plan = ($c['plan'] === '' ? 'free' : $c['plan']);
+    $premium = in_array($plan, ['paid', 'founder'], true);
+    $st = db()->prepare(
+      "SELECT COUNT(*) AS n FROM api_usage
+       WHERE company_id = ? AND kind = 'read'
+         AND created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')"
+    );
+    $st->execute([$companyId]);
+    $reads = (int)($st->fetch()['n'] ?? 0);
+    $info['plan'] = $plan;
+    $info['is_premium'] = $premium;
+    $info['in_trial'] = ((int)$c['in_trial'] === 1);
+    $info['trial_until'] = $c['trial_until'];
+    $info['reads_used'] = $reads;
+    // 無料は月3枚(登録30日間のお試し中は無制限)。有料と創業メンバーは無制限
+    $info['reads_limit'] = ($premium || $info['in_trial']) ? 0 : 3;
+    // AI検索は有料機能(お試し中は体験できる)
+    $info['ai_search'] = $premium || $info['in_trial'];
+    return $info;
+  } catch (Throwable $e) {
+    return $info; // プラン判定の都合で本処理を止めない(安全側=制限なし)
+  }
+}

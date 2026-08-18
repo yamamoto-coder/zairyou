@@ -1950,7 +1950,7 @@ function ShizaiSearch() {
       if (!auth.token) { setAuthReady(true); return; }
       try {
         const me = await api("auth.php", { method: "POST", json: { action: "me" } });
-        setAccount({ email: me.email, role: me.role, company: me.company, companyId: me.company_id || 0, owner: !!me.owner, fbDue: !!me.feedback_due });
+        setAccount({ email: me.email, role: me.role, company: me.company, companyId: me.company_id || 0, owner: !!me.owner, fbDue: !!me.feedback_due, plan: me.plan || null });
       } catch {
         auth.token = "";
       }
@@ -2972,7 +2972,7 @@ ${window.location.href.split("#")[0]}
     }
     return (
       <div className="min-h-screen bg-white text-gray-800">
-        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company, companyId: r.company_id || 0, owner: !!r.owner, fbDue: !!r.feedback_due })} />
+        <LoginScreen onLoggedIn={(r) => setAccount({ email: r.email, role: r.role, company: r.company, companyId: r.company_id || 0, owner: !!r.owner, fbDue: !!r.feedback_due, plan: r.plan || null })} />
       </div>
     );
   }
@@ -3919,6 +3919,8 @@ ${window.location.href.split("#")[0]}
                           {(() => { const s = statusOf(c); return (
                             <span className={"ml-1.5 text-xs rounded-full px-2 py-0.5 " + s.cls}>{s.label}</span>
                           ); })()}
+                          {c.plan === "paid" && <span className="ml-1.5 text-xs rounded-full px-2 py-0.5 bg-green-700 text-white">経営パック</span>}
+                          {c.plan === "founder" && <span className="ml-1.5 text-xs rounded-full px-2 py-0.5 bg-amber-600 text-white">創業メンバー</span>}
                           {c.id === tenants.my_company && <span className="ml-1.5 text-xs text-gray-400">(自社)</span>}
                         </div>
                         {c.id !== tenants.my_company && (
@@ -3930,6 +3932,7 @@ ${window.location.href.split("#")[0]}
                       </div>
                       <div className="mt-1 text-xs text-gray-500">
                         登録 {c.since} ・ 書類 {c.doc_count} 件({fmtBytes(Number(c.doc_bytes))})
+                        ・ 今月の読み取り {c.m_reads != null ? c.m_reads : 0} 枚
                         ・ データ {fmtBytes(Number(c.kv_bytes))}
                         ・ 電話 {c.phone
                           ? <a href={"tel:" + c.phone} className="text-green-800 font-medium">{fmtPhone(c.phone)}</a>
