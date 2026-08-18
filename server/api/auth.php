@@ -83,6 +83,8 @@ function ensure_feedback_table(): void {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_company (company_id)
   ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+  // ワンタップ回答(選択肢)。読点区切りの文字列で保存する
+  try { db()->exec("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS tags VARCHAR(500) NOT NULL DEFAULT ''"); } catch (Throwable $e) {}
 }
 
 // まだ回答の無い会社に、実際に使い込んだ段階でアンケートを出す
@@ -456,8 +458,15 @@ try {
       if ($rating < 1 || $rating > 5) respond(['error' => '満足度(星1〜5)を選んでください'], 400);
       $good = mb_substr(trim((string)($in['good'] ?? '')), 0, 2000);
       $request = mb_substr(trim((string)($in['request'] ?? '')), 0, 2000);
-      db()->prepare('INSERT INTO feedback (company_id, user_id, email, rating, good, request) VALUES (?, ?, ?, ?, ?, ?)')
-          ->execute([$auth['company_id'], $auth['user_id'], $auth['email'], $rating, $good, $request]);
+      // ワンタップ回答(選択肢)。文字列の配列だけを受け付け、読点区切りで保存
+      $tags = $in['tags'] ?? [];
+      if (!is_array($tags)) $tags = [];
+      $tags = array_slice(array_filter(array_map(function ($t) {
+        return is_string($t) ? mb_substr(trim($t), 0, 30) : '';
+      }, $tags), function ($t) { return $t !== ''; }), 0, 10);
+      $tagStr = mb_substr(implode('、', $tags), 0, 500);
+      db()->prepare('INSERT INTO feedback (company_id, user_id, email, rating, good, request, tags) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          ->execute([$auth['company_id'], $auth['user_id'], $auth['email'], $rating, $good, $request, $tagStr]);
       respond(['ok' => true]);
     }
 
@@ -606,7 +615,7 @@ try {
       ];
       // アンケートの回答本文(新しい順。導入社が増えても重くならないよう500件まで)
       $fq = db()->query(
-        "SELECT company_id, email, rating, good, request, DATE(created_at) AS on_day
+        "SELECT company_id, email, rating, good, request, tags, DATE(created_at) AS on_day
          FROM feedback ORDER BY id DESC LIMIT 500"
       );
       respond(['ok' => true, 'companies' => $companies, 'my_company' => $auth['company_id'], 'rates' => $rates, 'feedback' => $fq->fetchAll()]);
