@@ -85,20 +85,29 @@ function ensure_feedback_table(): void {
   ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
 }
 
-// 導入から7日たった会社に、まだ回答が無ければアンケートを出す
+// まだ回答の無い会社に、実際に使い込んだ段階でアンケートを出す
 // (会社の誰かが1回答えれば、その会社には二度と出さない)
+// 発動条件は次のいずれか:
+//  a) 利用ベース: 請求書を3枚以上取り込んだ
+//  b) 利用ベース: 2日以上利用していて、1枚以上取り込んだ
+//  c) 保険(時間ベース): 導入から7日たった
 function feedback_due(int $companyId): bool {
   if (is_owner_company($companyId)) return false; // 運営会社には出さない
   try {
     ensure_feedback_table();
     $st = db()->prepare(
       'SELECT (SELECT COUNT(*) FROM feedback f WHERE f.company_id = c.id) AS answered,
-              (c.created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS due
+              (SELECT COUNT(*) FROM documents d WHERE d.company_id = c.id) AS docs,
+              (SELECT COUNT(DISTINCT a.day) FROM activity_log a WHERE a.company_id = c.id) AS days,
+              (c.created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS aged
        FROM companies c WHERE c.id = ?'
     );
     $st->execute([$companyId]);
     $r = $st->fetch();
-    return $r && (int)$r['due'] === 1 && (int)$r['answered'] === 0;
+    if (!$r || (int)$r['answered'] > 0) return false;
+    $docs = (int)$r['docs'];
+    $days = (int)$r['days'];
+    return $docs >= 3 || ($days >= 2 && $docs >= 1) || (int)$r['aged'] === 1;
   } catch (Throwable $e) {
     return false; // アンケートの都合で本処理を止めない
   }
